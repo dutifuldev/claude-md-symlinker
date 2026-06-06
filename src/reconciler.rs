@@ -95,11 +95,17 @@ fn reconcile_adapter(
             if git::is_tracked(repo, &adapter.target)
                 .with_context(|| format!("failed to check tracked target {}", target.display()))?
             {
+                let exclude_updated = exclude::remove(
+                    repo,
+                    &adapter.target,
+                    config.git.exclude_mode,
+                    options.dry_run,
+                )?;
                 let result = result_for(
                     repo,
                     adapter,
                     Status::TrackedConflict,
-                    "target is tracked by Git; leaving it untouched and not excluding it",
+                    tracked_conflict_message(exclude_updated, options.dry_run),
                 );
                 if !options.dry_run {
                     record(
@@ -111,7 +117,7 @@ fn reconcile_adapter(
                         &result.message,
                     )?;
                 }
-                return Ok((result, false));
+                return Ok((result, exclude_updated));
             }
 
             if target_can_be_removed || stale_missing_managed_target {
@@ -234,11 +240,17 @@ fn reconcile_adapter(
     if git::is_tracked(repo, &adapter.target)
         .with_context(|| format!("failed to check tracked target {}", target.display()))?
     {
+        let exclude_updated = exclude::remove(
+            repo,
+            &adapter.target,
+            config.git.exclude_mode,
+            options.dry_run,
+        )?;
         let result = result_for(
             repo,
             adapter,
             Status::TrackedConflict,
-            "target is tracked by Git; leaving it untouched and not excluding it",
+            tracked_conflict_message(exclude_updated, options.dry_run),
         );
         if !options.dry_run {
             record(
@@ -250,7 +262,7 @@ fn reconcile_adapter(
                 &result.message,
             )?;
         }
-        return Ok((result, false));
+        return Ok((result, exclude_updated));
     }
 
     let target_state = materializer::classify(repo, adapter)?;
@@ -453,4 +465,18 @@ fn result_for(
         status,
         message: message.into(),
     }
+}
+
+fn tracked_conflict_message(exclude_updated: bool, dry_run: bool) -> String {
+    let mut message = "target is tracked by Git; leaving it untouched".to_string();
+    if exclude_updated {
+        if dry_run {
+            message.push_str("; would remove stale Git exclude");
+        } else {
+            message.push_str("; removed stale Git exclude");
+        }
+    } else {
+        message.push_str(" and not excluding it");
+    }
+    message
 }

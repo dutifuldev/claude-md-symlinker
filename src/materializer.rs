@@ -2,7 +2,7 @@ use std::{
     fs,
     fs::Metadata,
     io::{ErrorKind, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -56,7 +56,8 @@ pub struct MaterializeOutcome {
 }
 
 pub fn classify(repo: &GitRepo, adapter: &Adapter) -> Result<TargetState> {
-    let source = repo.root.join(&adapter.source);
+    let lexical_source = repo.root.join(&adapter.source);
+    let source = validated_source_path(repo, adapter)?;
     let target = repo.root.join(&adapter.target);
 
     let metadata = match fs::symlink_metadata(&target) {
@@ -82,7 +83,7 @@ pub fn classify(repo: &GitRepo, adapter: &Adapter) -> Result<TargetState> {
         return if symlink_points_to(
             repo,
             &target,
-            &source,
+            source.as_deref().unwrap_or(&lexical_source),
             &desired_symlink_target(repo, adapter),
         )? {
             Ok(TargetState::ManagedSymlink {
@@ -94,14 +95,17 @@ pub fn classify(repo: &GitRepo, adapter: &Adapter) -> Result<TargetState> {
     }
 
     if metadata.is_file() {
-        if source.exists() && same_file::is_same_file(&source, &target).unwrap_or(false) {
+        if source
+            .as_deref()
+            .is_some_and(|source| same_file::is_same_file(source, &target).unwrap_or(false))
+        {
             return Ok(TargetState::ManagedHardlink);
         }
 
         let bytes = fs::read(&target)
             .with_context(|| format!("failed to read target {}", target.display()))?;
         if is_managed_copy(&bytes, adapter) {
-            let refresh_needed = if regular_file_exists(&source)? {
+            let refresh_needed = if source.is_some() {
                 let desired = managed_copy_bytes(repo, adapter)?;
                 bytes != desired
             } else {
@@ -154,8 +158,7 @@ pub fn create_or_refresh(
             }
             if repair_needed && !dry_run {
                 let target = repo.root.join(&adapter.target);
-                fs::remove_file(&target)
-                    .with_context(|| format!("failed to remove {}", target.display()))?;
+                remove_file(&target)?;
                 create_symlink(repo, adapter)?;
             }
             Ok(MaterializeOutcome {
@@ -194,15 +197,18 @@ pub fn remove_target(repo: &GitRepo, adapter: &Adapter, dry_run: bool) -> Result
 }
 
 pub fn source_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> {
-    file_hash(&repo.root.join(&adapter.source))
+    let Some(source) = validated_source_path(repo, adapter)? else {
+        return Ok(None);
+    };
+    file_hash(&source)
 }
 
 pub fn source_exists(repo: &GitRepo, adapter: &Adapter) -> Result<bool> {
-    regular_file_exists(&repo.root.join(&adapter.source))
+    Ok(validated_source_path(repo, adapter)?.is_some())
 }
 
 fn file_hash(path: &Path) -> Result<Option<String>> {
-    let Some(_metadata) = source_metadata(path)? else {
+    let Some(_metadata) = source_metadata_path(path)? else {
         return Ok(None);
     };
 
@@ -212,16 +218,49 @@ fn file_hash(path: &Path) -> Result<Option<String>> {
     Ok(Some(format!("{:x}", hasher.finalize())))
 }
 
-fn regular_file_exists(path: &Path) -> Result<bool> {
-    Ok(source_metadata(path)?.is_some())
-}
-
-fn required_source_metadata(path: &Path) -> Result<Metadata> {
-    source_metadata(path)?
+fn required_source_path(repo: &GitRepo, adapter: &Adapter) -> Result<PathBuf> {
+    let path = repo.root.join(&adapter.source);
+    validated_source_path(repo, adapter)?
         .with_context(|| format!("source file does not exist: {}", path.display()))
 }
 
-fn source_metadata(path: &Path) -> Result<Option<Metadata>> {
+fn validated_source_path(repo: &GitRepo, adapter: &Adapter) -> Result<Option<PathBuf>> {
+    let path = repo.root.join(&adapter.source);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        bail!("{} is not a regular file", path.display());
+    }
+
+    let repo_root = repo
+        .root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize repo root {}", repo.root.display()))?;
+    let resolved = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize source file {}", path.display()))?;
+    if !resolved.starts_with(&repo_root) {
+        bail!(
+            "source file {} resolves outside repository root {}",
+            path.display(),
+            repo_root.display()
+        );
+    }
+
+    Ok(Some(resolved))
+}
+
+fn required_source_metadata_path(path: &Path) -> Result<Metadata> {
+    source_metadata_path(path)?
+        .with_context(|| format!("source file does not exist: {}", path.display()))
+}
+
+fn source_metadata_path(path: &Path) -> Result<Option<Metadata>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -421,7 +460,7 @@ fn desired_symlink_target(repo: &GitRepo, adapter: &Adapter) -> std::path::PathB
 }
 
 fn create_hardlink(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
-    let source = repo.root.join(&adapter.source);
+    let source = required_source_path(repo, adapter)?;
     let target = repo.root.join(&adapter.target);
     create_parent_dir(repo, &target)?;
     fs::hard_link(&source, &target)
@@ -431,7 +470,7 @@ fn create_hardlink(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
 
 fn write_managed_copy(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
     let target = repo.root.join(&adapter.target);
-    let source = repo.root.join(&adapter.source);
+    let source = required_source_path(repo, adapter)?;
     create_parent_dir(repo, &target)?;
     let bytes = managed_copy_bytes(repo, adapter)?;
     write_with_source_permissions(&source, &target, &bytes)?;
@@ -465,7 +504,7 @@ fn write_with_source_permissions(source: &Path, target: &Path, bytes: &[u8]) -> 
 
 #[cfg(not(unix))]
 fn write_with_source_permissions(source: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
-    let permissions = required_source_metadata(source)?.permissions();
+    let permissions = required_source_metadata_path(source)?.permissions();
     if target.exists() {
         let mut write_permissions = permissions.clone();
         write_permissions.set_readonly(false);
@@ -479,7 +518,7 @@ fn write_with_source_permissions(source: &Path, target: &Path, bytes: &[u8]) -> 
 }
 
 fn apply_source_permissions(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
-    let source = repo.root.join(&adapter.source);
+    let source = required_source_path(repo, adapter)?;
     let target = repo.root.join(&adapter.target);
     apply_permissions(&source, &target)
 }
@@ -495,14 +534,14 @@ fn apply_permissions(source: &Path, target: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn apply_permissions(source: &Path, target: &Path) -> Result<()> {
-    let permissions = required_source_metadata(source)?.permissions();
+    let permissions = required_source_metadata_path(source)?.permissions();
     fs::set_permissions(target, permissions)
         .with_context(|| format!("failed to set permissions on {}", target.display()))?;
     Ok(())
 }
 
 fn target_permissions_match_source(repo: &GitRepo, adapter: &Adapter) -> Result<bool> {
-    let source = repo.root.join(&adapter.source);
+    let source = required_source_path(repo, adapter)?;
     let target = repo.root.join(&adapter.target);
     permissions_match(&source, &target)
 }
@@ -514,7 +553,7 @@ fn permissions_match(source: &Path, target: &Path) -> Result<bool> {
 
 #[cfg(not(unix))]
 fn permissions_match(source: &Path, target: &Path) -> Result<bool> {
-    let source = required_source_metadata(source)?.permissions();
+    let source = required_source_metadata_path(source)?.permissions();
     let target = fs::metadata(target)
         .with_context(|| format!("failed to inspect {}", target.display()))?
         .permissions();
@@ -525,7 +564,7 @@ fn permissions_match(source: &Path, target: &Path) -> Result<bool> {
 fn source_mode(source: &Path) -> Result<u32> {
     use std::os::unix::fs::PermissionsExt;
 
-    Ok(required_source_metadata(source)?.permissions().mode() & 0o7777)
+    Ok(required_source_metadata_path(source)?.permissions().mode() & 0o7777)
 }
 
 #[cfg(unix)]
@@ -551,8 +590,8 @@ fn validate_existing_target_for_write(repo: &GitRepo, adapter: &Adapter) -> Resu
 }
 
 fn managed_copy_bytes(repo: &GitRepo, adapter: &Adapter) -> Result<Vec<u8>> {
-    let source = repo.root.join(&adapter.source);
-    required_source_metadata(&source)?;
+    let source = required_source_path(repo, adapter)?;
+    required_source_metadata_path(&source)?;
     let mut bytes = managed_copy_header(adapter).into_bytes();
     bytes.push(b'\n');
     bytes

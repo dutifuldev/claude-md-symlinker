@@ -312,6 +312,42 @@ fn tracked_claude_md_is_not_changed_or_ignored() {
 }
 
 #[test]
+fn tracked_managed_shim_removes_old_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    assert!(git_check_ignore(&repo, "CLAUDE.md"));
+    git(&repo, &["add", "-f", "CLAUDE.md"]);
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.tracked_conflicts, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+    git(&repo, &["rm", "--cached", "CLAUDE.md"]);
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
 fn tracked_deleted_claude_md_is_not_recreated() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -796,6 +832,33 @@ fn symlinked_source_is_rejected_before_creating_shim() {
     std::os::unix::fs::symlink(outside.path().join("secret"), repo.join("AGENTS.md")).unwrap();
     let mut config = fixture.config();
     config.materialization.strategy = MaterializationStrategy::Copy;
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.errors, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_source_parent_outside_repo_is_rejected_before_copying() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("AGENTS.md"), "outside secret\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.join("link")).unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Copy;
+    config.adapters.claude.source = PathBuf::from("link/AGENTS.md");
 
     let report = reconciler::apply(
         &config,
