@@ -215,7 +215,8 @@ exclude_dir_names = [
 
 [git]
 exclude_mode = "per_repo"
-# per_repo | global
+# per_repo
+# global is intentionally rejected until Git can support scoped global excludes
 
 [watch]
 enabled = true
@@ -339,14 +340,11 @@ Rules:
 5. Do not create duplicate entries.
 6. In dry-run mode, report the planned change only.
 
-Optional global mode:
-
-```sh
-git config --global core.excludesFile <claudectomy-global-excludes>
-```
-
-Global mode should be explicit because it hides matching files in every Git
-repository on the machine.
+Global exclude mode is intentionally not part of the first production system.
+Git global excludes cannot be scoped to configured roots, so a global
+`CLAUDE.md` rule would hide user-owned files in repositories Claudectomy does
+not manage. If a future Git-compatible design can preserve root scoping, add it
+as an explicit opt-in mode with conflict cleanup for older local shims.
 
 ## Materialization
 
@@ -616,7 +614,7 @@ cargo run -- clean --dry-run
 
 - Resolve exclude file with Git.
 - Add managed exclude blocks.
-- Implement global exclude mode behind config.
+- Reject global exclude mode until it can preserve configured scan scope.
 - Test idempotency.
 
 ### Milestone 6: State

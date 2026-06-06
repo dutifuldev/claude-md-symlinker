@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     config::{ExcludeMode, data_dir},
@@ -13,14 +13,7 @@ const END: &str = "# claudectomy managed end";
 pub fn ensure(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: bool) -> Result<bool> {
     match mode {
         ExcludeMode::PerRepo => ensure_file(&repo.exclude_path, target_rel, dry_run),
-        ExcludeMode::Global => {
-            let path = data_dir()?.join("git-excludes");
-            let updated = ensure_entry_file(&path, &ignore_entry(target_rel), dry_run)?;
-            let removed_unignore =
-                remove_entry_file(&repo.exclude_path, &unignore_entry(target_rel), dry_run)?;
-            let config_updated = git::ensure_global_excludes_file(&path, dry_run)?;
-            Ok(updated || removed_unignore || config_updated)
-        }
+        ExcludeMode::Global => reject_global_mode(),
     }
 }
 
@@ -35,14 +28,14 @@ pub fn remove(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: boo
             };
             Ok(removed_ignore || ensured_unignore)
         }
-        ExcludeMode::Global => {
-            let removed_ignore =
-                remove_entry_file(&repo.exclude_path, &ignore_entry(target_rel), dry_run)?;
-            let ensured_unignore =
-                ensure_entry_file(&repo.exclude_path, &unignore_entry(target_rel), dry_run)?;
-            Ok(removed_ignore || ensured_unignore)
-        }
+        ExcludeMode::Global => reject_global_mode(),
     }
+}
+
+fn reject_global_mode() -> Result<bool> {
+    bail!(
+        "global exclude mode is disabled because Git global excludes cannot be scoped to configured roots; use per_repo"
+    )
 }
 
 fn claudectomy_global_ignore_is_active(target_rel: &Path) -> Result<bool> {

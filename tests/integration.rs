@@ -1142,17 +1142,12 @@ fn cli_dry_run_init_does_not_write_config() {
 }
 
 #[test]
-fn global_mode_configures_preseeded_global_exclude_file() {
+fn global_mode_is_rejected_without_mutating_repo_or_global_config() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
     let config_path = fixture.root.path().join("config.toml");
     let data_dir = fixture.data.path();
-    fs::write(
-        data_dir.join("git-excludes"),
-        "# claudectomy managed begin\n/CLAUDE.md\n# claudectomy managed end\n",
-    )
-    .unwrap();
     fs::write(
         &config_path,
         format!(
@@ -1170,37 +1165,22 @@ fn global_mode_configures_preseeded_global_exclude_file() {
         .args(["--config", config_path.to_str().unwrap(), "apply"])
         .output()
         .expect("apply runs");
-    assert!(
-        apply.status.success(),
-        "apply failed: {}\n{}",
-        String::from_utf8_lossy(&apply.stdout),
-        String::from_utf8_lossy(&apply.stderr)
-    );
+    assert_eq!(apply.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&apply.stdout);
+    assert!(stdout.contains("Errors 1."));
+    assert!(stdout.contains("global exclude mode is disabled"));
+    assert!(!repo.join("CLAUDE.md").exists());
 
     let configured = Command::new("git")
         .env("GIT_CONFIG_GLOBAL", &global_config)
         .args(["config", "--global", "--get", "core.excludesFile"])
         .output()
         .expect("git config reads");
-    assert!(configured.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&configured.stdout).trim(),
-        data_dir.join("git-excludes").to_string_lossy()
-    );
-
-    let status = Command::new("git")
-        .env("GIT_CONFIG_GLOBAL", &global_config)
-        .arg("-C")
-        .arg(&repo)
-        .args(["status", "--short", "--", "CLAUDE.md"])
-        .output()
-        .expect("git status runs");
-    assert!(status.status.success());
-    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+    assert!(!configured.status.success());
 }
 
 #[test]
-fn global_mode_conflict_removes_stale_per_repo_ignore() {
+fn per_repo_mode_conflict_unignores_owned_global_exclude() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
@@ -1209,23 +1189,6 @@ fn global_mode_conflict_removes_stale_per_repo_ignore() {
     let global_config = fixture.root.path().join("global-gitconfig");
     let bin = env!("CARGO_BIN_EXE_claudectomy");
 
-    fs::write(
-        &config_path,
-        format!("[scan]\nroots = [\"{}\"]\n", fixture.root.path().display()),
-    )
-    .unwrap();
-    let apply = Command::new(bin)
-        .env("CLAUDECTOMY_DATA_DIR", data_dir)
-        .args(["--config", config_path.to_str().unwrap(), "apply"])
-        .output()
-        .expect("apply runs");
-    assert!(
-        apply.status.success(),
-        "apply failed: {}",
-        String::from_utf8_lossy(&apply.stderr)
-    );
-
-    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
     fs::write(repo.join("CLAUDE.md"), "user-owned replacement\n").unwrap();
     fs::write(
         data_dir.join("git-excludes"),
@@ -1248,69 +1211,6 @@ fn global_mode_conflict_removes_stale_per_repo_ignore() {
         String::from_utf8_lossy(&configured.stderr)
     );
 
-    fs::write(
-        &config_path,
-        format!(
-            "[scan]\nroots = [\"{}\"]\n\n[git]\nexclude_mode = \"global\"\n",
-            fixture.root.path().display()
-        ),
-    )
-    .unwrap();
-    let conflict = Command::new(bin)
-        .env("CLAUDECTOMY_DATA_DIR", data_dir)
-        .env("GIT_CONFIG_GLOBAL", &global_config)
-        .args(["--config", config_path.to_str().unwrap(), "apply"])
-        .output()
-        .expect("global apply runs");
-    assert_eq!(conflict.status.code(), Some(2));
-
-    let status = Command::new("git")
-        .env("GIT_CONFIG_GLOBAL", &global_config)
-        .arg("-C")
-        .arg(&repo)
-        .args(["status", "--short", "--", "CLAUDE.md"])
-        .output()
-        .expect("git status runs");
-    assert!(status.status.success());
-    assert_eq!(String::from_utf8_lossy(&status.stdout), "?? CLAUDE.md\n");
-
-    let exclude = fs::read_to_string(git_exclude_path(&repo)).unwrap();
-    assert!(exclude.lines().any(|line| line == "!/CLAUDE.md"));
-    assert!(!exclude.lines().any(|line| line == "/CLAUDE.md"));
-}
-
-#[test]
-fn per_repo_mode_conflict_unignores_owned_global_exclude() {
-    let fixture = Fixture::new();
-    let repo = fixture.repo("repo");
-    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
-    let config_path = fixture.root.path().join("config.toml");
-    let data_dir = fixture.data.path();
-    let global_config = fixture.root.path().join("global-gitconfig");
-    let bin = env!("CARGO_BIN_EXE_claudectomy");
-
-    fs::write(
-        &config_path,
-        format!(
-            "[scan]\nroots = [\"{}\"]\n\n[git]\nexclude_mode = \"global\"\n",
-            fixture.root.path().display()
-        ),
-    )
-    .unwrap();
-    let apply = Command::new(bin)
-        .env("CLAUDECTOMY_DATA_DIR", data_dir)
-        .env("GIT_CONFIG_GLOBAL", &global_config)
-        .args(["--config", config_path.to_str().unwrap(), "apply"])
-        .output()
-        .expect("global apply runs");
-    assert!(
-        apply.status.success(),
-        "global apply failed: {}",
-        String::from_utf8_lossy(&apply.stderr)
-    );
-
-    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
-    fs::write(repo.join("CLAUDE.md"), "user-owned replacement\n").unwrap();
     fs::write(
         &config_path,
         format!("[scan]\nroots = [\"{}\"]\n", fixture.root.path().display()),
