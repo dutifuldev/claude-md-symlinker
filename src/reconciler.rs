@@ -217,6 +217,8 @@ fn reconcile_adapter(
         return Ok((result, exclude_updated));
     }
 
+    let _source_hash = materializer::source_hash(repo, adapter)?;
+
     if git::is_tracked(repo, &adapter.target)
         .with_context(|| format!("failed to check tracked target {}", target.display()))?
     {

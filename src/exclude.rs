@@ -26,7 +26,15 @@ pub fn ensure(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: boo
 
 pub fn remove(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: bool) -> Result<bool> {
     match mode {
-        ExcludeMode::PerRepo => remove_from_file(&repo.exclude_path, target_rel, dry_run),
+        ExcludeMode::PerRepo => {
+            let removed_ignore = remove_from_file(&repo.exclude_path, target_rel, dry_run)?;
+            let ensured_unignore = if claudectomy_global_ignore_is_active(target_rel)? {
+                ensure_entry_file(&repo.exclude_path, &unignore_entry(target_rel), dry_run)?
+            } else {
+                false
+            };
+            Ok(removed_ignore || ensured_unignore)
+        }
         ExcludeMode::Global => {
             let removed_ignore =
                 remove_entry_file(&repo.exclude_path, &ignore_entry(target_rel), dry_run)?;
@@ -35,6 +43,31 @@ pub fn remove(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: boo
             Ok(removed_ignore || ensured_unignore)
         }
     }
+}
+
+fn claudectomy_global_ignore_is_active(target_rel: &Path) -> Result<bool> {
+    let claudectomy_global_path = data_dir()?.join("git-excludes");
+    let Some(configured_path) = git::configured_global_excludes_file()? else {
+        return Ok(false);
+    };
+    if configured_path != claudectomy_global_path {
+        return Ok(false);
+    }
+
+    let current = match fs::read_to_string(&claudectomy_global_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read global exclude file {}",
+                    claudectomy_global_path.display()
+                )
+            });
+        }
+    };
+    let entry = ignore_entry(target_rel);
+    Ok(current.lines().any(|line| line.trim() == entry))
 }
 
 fn ensure_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<bool> {

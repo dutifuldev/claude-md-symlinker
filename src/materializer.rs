@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -113,6 +113,7 @@ pub fn create_or_refresh(
         TargetState::ManagedSymlink { repair_needed } => {
             if repair_needed && !dry_run {
                 let target = repo.root.join(&adapter.target);
+                create_parent_dir(repo, &target)?;
                 fs::remove_file(&target)
                     .with_context(|| format!("failed to remove {}", target.display()))?;
                 create_symlink(repo, adapter)?;
@@ -139,6 +140,7 @@ pub fn remove_target(repo: &GitRepo, adapter: &Adapter, dry_run: bool) -> Result
         return Ok(false);
     }
 
+    create_parent_dir(repo, &target)?;
     if !dry_run {
         fs::remove_file(&target)
             .with_context(|| format!("failed to remove {}", target.display()))?;
@@ -152,6 +154,7 @@ pub fn recreate_hardlink(
     dry_run: bool,
 ) -> Result<MaterializeOutcome> {
     let target = repo.root.join(&adapter.target);
+    create_parent_dir(repo, &target)?;
     if !dry_run {
         if fs::symlink_metadata(&target).is_ok() {
             fs::remove_file(&target)
@@ -261,7 +264,7 @@ fn create_missing(
 
 fn create_symlink(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
     let target = repo.root.join(&adapter.target);
-    create_parent_dir(&target)?;
+    create_parent_dir(repo, &target)?;
     let relative_source = desired_symlink_target(repo, adapter);
     symlink_file(&relative_source, &target)
         .with_context(|| format!("failed to symlink {}", target.display()))?;
@@ -278,7 +281,7 @@ fn desired_symlink_target(repo: &GitRepo, adapter: &Adapter) -> std::path::PathB
 fn create_hardlink(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
     let source = repo.root.join(&adapter.source);
     let target = repo.root.join(&adapter.target);
-    create_parent_dir(&target)?;
+    create_parent_dir(repo, &target)?;
     fs::hard_link(&source, &target)
         .with_context(|| format!("failed to hardlink {}", target.display()))?;
     Ok(())
@@ -286,7 +289,7 @@ fn create_hardlink(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
 
 fn write_managed_copy(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
     let target = repo.root.join(&adapter.target);
-    create_parent_dir(&target)?;
+    create_parent_dir(repo, &target)?;
     let bytes = managed_copy_bytes(repo, adapter)?;
     fs::write(&target, bytes).with_context(|| format!("failed to write {}", target.display()))?;
     Ok(())
@@ -352,10 +355,42 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-fn create_parent_dir(path: &Path) -> Result<()> {
+fn create_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
+        let repo_root = repo
+            .root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize repo root {}", repo.root.display()))?;
+        if let Some(existing_parent) = nearest_existing_ancestor(parent) {
+            ensure_resolves_under_repo(&repo_root, existing_parent)?;
+        }
+
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        ensure_resolves_under_repo(&repo_root, parent)?;
+    }
+    Ok(())
+}
+
+fn nearest_existing_ancestor(mut path: &Path) -> Option<&Path> {
+    loop {
+        if path.exists() {
+            return Some(path);
+        }
+        path = path.parent()?;
+    }
+}
+
+fn ensure_resolves_under_repo(repo_root: &Path, path: &Path) -> Result<()> {
+    let resolved = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize target parent {}", path.display()))?;
+    if !resolved.starts_with(repo_root) {
+        bail!(
+            "target parent {} resolves outside repository root {}",
+            path.display(),
+            repo_root.display()
+        );
     }
     Ok(())
 }

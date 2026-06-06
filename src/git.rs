@@ -94,6 +94,10 @@ pub fn ensure_global_excludes_file(path: &Path, dry_run: bool) -> Result<bool> {
     Ok(true)
 }
 
+pub fn configured_global_excludes_file() -> Result<Option<PathBuf>> {
+    Ok(global_config_value("core.excludesFile")?.map(PathBuf::from))
+}
+
 fn global_config_value(key: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .arg("config")

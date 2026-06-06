@@ -335,6 +335,42 @@ fn adapter_source_and_target_must_be_distinct() {
     assert_eq!(git_status(&repo, "AGENTS.md"), "?? AGENTS.md\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_target_parent_outside_repo_is_rejected() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.join(".claude")).unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".claude/CLAUDE.md");
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.errors, 1);
+    assert!(!outside.path().join("CLAUDE.md").exists());
+    assert!(
+        fs::symlink_metadata(repo.join(".claude"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(
+        !exclude_text
+            .lines()
+            .any(|line| line == "/.claude/CLAUDE.md")
+    );
+}
+
 #[test]
 fn invalid_utf8_exclude_file_is_not_overwritten() {
     let fixture = Fixture::new();
@@ -357,6 +393,27 @@ fn invalid_utf8_exclude_file_is_not_overwritten() {
     assert_eq!(report.summary.errors, 1);
     assert!(!repo.join("CLAUDE.md").exists());
     assert_eq!(fs::read(exclude_path).unwrap(), original);
+}
+
+#[test]
+fn non_file_source_is_rejected_before_creating_shim() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::create_dir(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.errors, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
 }
 
 #[test]
@@ -1205,6 +1262,66 @@ fn global_mode_conflict_removes_stale_per_repo_ignore() {
         .args(["--config", config_path.to_str().unwrap(), "apply"])
         .output()
         .expect("global apply runs");
+    assert_eq!(conflict.status.code(), Some(2));
+
+    let status = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", &global_config)
+        .arg("-C")
+        .arg(&repo)
+        .args(["status", "--short", "--", "CLAUDE.md"])
+        .output()
+        .expect("git status runs");
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "?? CLAUDE.md\n");
+
+    let exclude = fs::read_to_string(git_exclude_path(&repo)).unwrap();
+    assert!(exclude.lines().any(|line| line == "!/CLAUDE.md"));
+    assert!(!exclude.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[test]
+fn per_repo_mode_conflict_unignores_owned_global_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config_path = fixture.root.path().join("config.toml");
+    let data_dir = fixture.data.path();
+    let global_config = fixture.root.path().join("global-gitconfig");
+    let bin = env!("CARGO_BIN_EXE_claudectomy");
+
+    fs::write(
+        &config_path,
+        format!(
+            "[scan]\nroots = [\"{}\"]\n\n[git]\nexclude_mode = \"global\"\n",
+            fixture.root.path().display()
+        ),
+    )
+    .unwrap();
+    let apply = Command::new(bin)
+        .env("CLAUDECTOMY_DATA_DIR", data_dir)
+        .env("GIT_CONFIG_GLOBAL", &global_config)
+        .args(["--config", config_path.to_str().unwrap(), "apply"])
+        .output()
+        .expect("global apply runs");
+    assert!(
+        apply.status.success(),
+        "global apply failed: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "user-owned replacement\n").unwrap();
+    fs::write(
+        &config_path,
+        format!("[scan]\nroots = [\"{}\"]\n", fixture.root.path().display()),
+    )
+    .unwrap();
+    let conflict = Command::new(bin)
+        .env("CLAUDECTOMY_DATA_DIR", data_dir)
+        .env("GIT_CONFIG_GLOBAL", &global_config)
+        .args(["--config", config_path.to_str().unwrap(), "apply"])
+        .output()
+        .expect("per-repo apply runs");
     assert_eq!(conflict.status.code(), Some(2));
 
     let status = Command::new("git")
