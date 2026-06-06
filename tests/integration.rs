@@ -1,7 +1,9 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use claudectomy::{
@@ -335,6 +337,27 @@ fn adapter_source_and_target_must_be_distinct() {
     assert_eq!(git_status(&repo, "AGENTS.md"), "?? AGENTS.md\n");
 }
 
+#[test]
+fn adapter_paths_cannot_point_inside_git_internals() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".git/hooks/pre-commit");
+
+    let error = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("Git internals"));
+    assert!(!repo.join(".git/hooks/pre-commit").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_target_parent_outside_repo_is_rejected() {
@@ -345,6 +368,24 @@ fn symlinked_target_parent_outside_repo_is_rejected() {
     std::os::unix::fs::symlink(outside.path(), repo.join(".claude")).unwrap();
     let mut config = fixture.config();
     config.adapters.claude.target = PathBuf::from(".claude/CLAUDE.md");
+
+    let dry_run = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: true },
+    )
+    .unwrap();
+
+    assert_eq!(dry_run.summary.errors, 1);
+    assert!(!outside.path().join("CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(
+        !exclude_text
+            .lines()
+            .any(|line| line == "/.claude/CLAUDE.md")
+    );
 
     let report = reconciler::apply(
         &config,
@@ -372,6 +413,32 @@ fn symlinked_target_parent_outside_repo_is_rejected() {
 }
 
 #[test]
+fn target_with_gitignore_metacharacters_is_excluded_literally() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from("CLAUDE [1]?.md ");
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.created, 1);
+    fs::write(repo.join("CLAUDE 1x.md"), "unrelated user file\n").unwrap();
+    assert!(git_check_ignore(&repo, "CLAUDE [1]?.md "));
+    assert!(!git_check_ignore(&repo, "CLAUDE 1x.md"));
+    let status = git_status(&repo, "CLAUDE 1x.md");
+    assert!(status.starts_with("?? "));
+    assert!(status.contains("CLAUDE 1x.md"));
+}
+
+#[test]
 fn invalid_utf8_exclude_file_is_not_overwritten() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -393,6 +460,46 @@ fn invalid_utf8_exclude_file_is_not_overwritten() {
     assert_eq!(report.summary.errors, 1);
     assert!(!repo.join("CLAUDE.md").exists());
     assert_eq!(fs::read(exclude_path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_source_is_rejected_without_hanging() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let mkfifo = Command::new("mkfifo")
+        .arg(repo.join("AGENTS.md"))
+        .output()
+        .expect("mkfifo runs");
+    assert!(
+        mkfifo.status.success(),
+        "mkfifo failed: {}",
+        String::from_utf8_lossy(&mkfifo.stderr)
+    );
+    let config_path = fixture.root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!("[scan]\nroots = [\"{}\"]\n", fixture.root.path().display()),
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudectomy");
+    let child = Command::new(bin)
+        .env("CLAUDECTOMY_DATA_DIR", fixture.data.path())
+        .args(["--config", config_path.to_str().unwrap(), "apply"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("apply starts");
+
+    let output = wait_with_timeout(child, Duration::from_secs(2))
+        .expect("apply should reject the FIFO source without hanging");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("is not a regular file"));
+    assert!(!repo.join("CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
 }
 
 #[test]
@@ -1587,9 +1694,36 @@ fn git_status(repo: &Path, path: &str) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
+fn git_check_ignore(repo: &Path, path: &str) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "--quiet", "--"])
+        .arg(path)
+        .output()
+        .expect("git check-ignore runs");
+    output.status.success()
+}
+
 fn git_exclude_path(repo: &Path) -> PathBuf {
     let exclude = git_stdout(repo, &["rev-parse", "--git-path", "info/exclude"]);
     path_from_git_output(repo, &exclude)
+}
+
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if child.try_wait().ok().flatten().is_some() {
+            return child.wait_with_output().ok();
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
 }
 
 fn path_from_git_output(repo: &Path, text: &str) -> PathBuf {

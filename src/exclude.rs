@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Component, Path},
+};
 
 use anyhow::{Context, Result, bail};
 
@@ -119,11 +123,33 @@ fn remove_entry_file(path: &Path, entry: &str, dry_run: bool) -> Result<bool> {
 }
 
 fn ignore_entry(target_rel: &Path) -> String {
-    format!("/{}", target_rel.to_string_lossy().replace('\\', "/"))
+    format!("/{}", gitignore_path(target_rel))
 }
 
 fn unignore_entry(target_rel: &Path) -> String {
-    format!("!/{}", target_rel.to_string_lossy().replace('\\', "/"))
+    format!("!/{}", gitignore_path(target_rel))
+}
+
+fn gitignore_path(target_rel: &Path) -> String {
+    target_rel
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(escape_gitignore_segment(&part.to_string_lossy())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn escape_gitignore_segment(segment: &str) -> String {
+    let mut escaped = String::with_capacity(segment.len());
+    for ch in segment.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[' | ']' | ' ') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 fn upsert_managed_entry(current: &str, entry: &str) -> String {
@@ -138,9 +164,8 @@ fn upsert_managed_entry(current: &str, entry: &str) -> String {
         && begin < end
     {
         for line in &lines[begin + 1..end] {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                entries.insert(trimmed.to_string());
+            if !line.trim().is_empty() {
+                entries.insert((*line).to_string());
             }
         }
 
@@ -182,9 +207,8 @@ fn remove_managed_entry(current: &str, entry: &str) -> String {
 
     let mut entries = BTreeSet::new();
     for line in &lines[begin + 1..end] {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && trimmed != entry {
-            entries.insert(trimmed.to_string());
+        if !line.trim().is_empty() && *line != entry {
+            entries.insert((*line).to_string());
         }
     }
 
@@ -209,7 +233,9 @@ fn with_trailing_newline(mut text: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_managed_entry, upsert_managed_entry};
+    use std::path::Path;
+
+    use super::{ignore_entry, remove_managed_entry, unignore_entry, upsert_managed_entry};
 
     #[test]
     fn upsert_is_idempotent() {
@@ -225,5 +251,23 @@ mod tests {
         assert!(!next.contains("claudectomy managed"));
         assert!(!next.contains("/CLAUDE.md"));
         assert!(next.contains("existing"));
+    }
+
+    #[test]
+    fn entries_escape_gitignore_metacharacters() {
+        let path = Path::new("nested/CLAUDE [1]?.md");
+        assert_eq!(ignore_entry(path), "/nested/CLAUDE\\ \\[1\\]\\?.md");
+        assert_eq!(unignore_entry(path), "!/nested/CLAUDE\\ \\[1\\]\\?.md");
+    }
+
+    #[test]
+    fn remove_preserves_escaped_trailing_space_entries() {
+        let entry = ignore_entry(Path::new("CLAUDE.md "));
+        assert_eq!(entry, "/CLAUDE.md\\ ");
+        let current = upsert_managed_entry("existing\n", &entry);
+        assert!(current.contains("/CLAUDE.md\\ \n"));
+        let next = remove_managed_entry(&current, &entry);
+        assert!(!next.contains("claudectomy managed"));
+        assert!(!next.contains("/CLAUDE.md\\ "));
     }
 }

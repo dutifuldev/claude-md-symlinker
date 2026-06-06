@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::ErrorKind,
     path::{Component, Path, PathBuf},
 };
 
@@ -178,8 +179,15 @@ pub fn target_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> 
 }
 
 fn file_hash(path: &Path) -> Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        bail!("{} is not a regular file", path.display());
     }
 
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -202,6 +210,9 @@ fn create_missing(
     config: &MaterializationConfig,
     dry_run: bool,
 ) -> Result<MaterializeOutcome> {
+    let target = repo.root.join(&adapter.target);
+    validate_parent_dir(repo, &target)?;
+
     match config.strategy {
         MaterializationStrategy::Symlink => {
             if !dry_run {
@@ -357,6 +368,21 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 fn create_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
+        validate_parent_dir(repo, path)?;
+
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        let repo_root = repo
+            .root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize repo root {}", repo.root.display()))?;
+        ensure_resolves_under_repo(&repo_root, parent)?;
+    }
+    Ok(())
+}
+
+fn validate_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
         let repo_root = repo
             .root
             .canonicalize()
@@ -364,10 +390,6 @@ fn create_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
         if let Some(existing_parent) = nearest_existing_ancestor(parent) {
             ensure_resolves_under_repo(&repo_root, existing_parent)?;
         }
-
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create directory {}", parent.display()))?;
-        ensure_resolves_under_repo(&repo_root, parent)?;
     }
     Ok(())
 }
