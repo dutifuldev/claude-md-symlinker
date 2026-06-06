@@ -278,7 +278,7 @@ fn reconcile_adapter(
                 }
             })?;
 
-            let status = status_for(previous_state, outcome.changed);
+            let status = status_for(previous_state, outcome.kind, outcome.changed);
             let mut message = message_for(status, outcome.kind, options.dry_run);
             if exclude_updated {
                 message.push_str("; Git exclude updated");
@@ -430,10 +430,23 @@ fn target_managed_kind(target_state: &TargetState) -> Option<MaterializationKind
     })
 }
 
-fn status_for(previous_state: TargetState, changed: bool) -> Status {
+fn status_for(
+    previous_state: TargetState,
+    outcome_kind: MaterializationKind,
+    changed: bool,
+) -> Status {
+    if changed
+        && target_managed_kind(&previous_state)
+            .map(|previous_kind| previous_kind != outcome_kind)
+            .unwrap_or(false)
+    {
+        return Status::Repaired;
+    }
+
     match previous_state {
         TargetState::Missing => Status::Created,
         TargetState::ManagedSymlink { .. } if changed => Status::Repaired,
+        TargetState::ManagedHardlink if changed => Status::Repaired,
         TargetState::ManagedSymlink { .. } | TargetState::ManagedHardlink => Status::Kept,
         TargetState::ManagedCopy { .. } if changed => Status::Refreshed,
         TargetState::ManagedCopy { .. } => Status::Kept,

@@ -47,12 +47,20 @@ pub fn run(
             .with_context(|| format!("failed to watch {}", root.display()))?;
     }
 
-    let interval = Duration::from_secs(config.watch.reconcile_interval_minutes.max(1) * 60);
+    let event_poll_interval =
+        Duration::from_secs(config.watch.reconcile_interval_minutes.max(1) * 60);
+    let full_rescan_interval =
+        Duration::from_secs(config.watch.full_rescan_interval_hours.max(1) * 60 * 60);
     let debounce = Duration::from_millis(500);
     let mut last_run = Instant::now();
 
     loop {
-        match rx.recv_timeout(interval) {
+        let until_full_rescan = full_rescan_interval
+            .checked_sub(last_run.elapsed())
+            .unwrap_or(Duration::ZERO);
+        let timeout = event_poll_interval.min(until_full_rescan.max(Duration::from_millis(1)));
+
+        match rx.recv_timeout(timeout) {
             Ok(Ok(_event)) => {
                 thread::sleep(debounce);
                 while rx.try_recv().is_ok() {}
@@ -63,7 +71,7 @@ pub fn run(
                 tracing::warn!("watch error: {error}");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if last_run.elapsed() >= interval {
+                if last_run.elapsed() >= full_rescan_interval {
                     run_once(config, config_existed, cli_roots, state, dry_run)?;
                     last_run = Instant::now();
                 }

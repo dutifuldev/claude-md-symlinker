@@ -1,6 +1,6 @@
 # Claudectomy Implementation Plan
 
-Status: planning only. No implementation has started.
+Status: initial implementation in progress.
 
 ## Goal
 
@@ -170,7 +170,7 @@ Checks:
 - SQLite state can be opened.
 - Configured scan roots exist.
 - Symlink support is available in a temporary directory.
-- Global exclude mode, if enabled, is configured correctly.
+- Global exclude mode is reported as disabled if configured.
 - Enabled adapters do not target the same file in incompatible ways.
 
 ### `claudectomy clean`
@@ -686,13 +686,11 @@ These are intentionally deferred:
 ## Open Decisions
 
 1. Whether `clean` should require `--confirm` for actual deletion.
-2. Whether global exclude mode should be implemented immediately or documented
-   as planned.
-3. Whether the default `init` scan roots should include only explicit user input
+2. Whether the default `init` scan roots should include only explicit user input
    or offer common suggestions.
-4. Whether Windows should prefer copy by default even when symlink support is
+3. Whether Windows should prefer copy by default even when symlink support is
    available.
-5. Whether `watch` should be included in the first release or land immediately
+4. Whether `watch` should be included in the first release or land immediately
    after `apply`, `doctor`, and `clean`.
 
 The architecture should support all of these choices without changing the core

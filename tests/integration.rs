@@ -657,6 +657,40 @@ fn hardlink_materialization_recovers_after_source_replacement() {
     assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
 }
 
+#[test]
+fn dry_run_reports_strategy_replacement_as_repair() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    config.materialization.strategy = MaterializationStrategy::Copy;
+    let preview = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: true },
+    )
+    .unwrap();
+
+    assert_eq!(preview.summary.repaired, 1);
+    assert_eq!(preview.summary.kept, 0);
+    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+}
+
 #[cfg(unix)]
 #[test]
 fn dry_run_reports_unwritable_target_parent_error() {
