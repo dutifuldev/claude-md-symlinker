@@ -15,11 +15,13 @@ pub fn ensure(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: boo
         ExcludeMode::PerRepo => ensure_file(&repo.exclude_path, target_rel, dry_run),
         ExcludeMode::Global => {
             let path = data_dir()?.join("git-excludes");
-            let updated = ensure_file(&path, target_rel, dry_run)?;
+            let updated = ensure_entry_file(&path, &ignore_entry(target_rel), dry_run)?;
+            let removed_unignore =
+                remove_entry_file(&repo.exclude_path, &unignore_entry(target_rel), dry_run)?;
             if updated && !dry_run {
                 git::set_global_excludes_file(&path)?;
             }
-            Ok(updated)
+            Ok(updated || removed_unignore)
         }
     }
 }
@@ -28,16 +30,18 @@ pub fn remove(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: boo
     match mode {
         ExcludeMode::PerRepo => remove_from_file(&repo.exclude_path, target_rel, dry_run),
         ExcludeMode::Global => {
-            let path = data_dir()?.join("git-excludes");
-            remove_from_file(&path, target_rel, dry_run)
+            ensure_entry_file(&repo.exclude_path, &unignore_entry(target_rel), dry_run)
         }
     }
 }
 
 fn ensure_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<bool> {
-    let entry = format!("/{}", target_rel.to_string_lossy().replace('\\', "/"));
+    ensure_entry_file(path, &ignore_entry(target_rel), dry_run)
+}
+
+fn ensure_entry_file(path: &Path, entry: &str, dry_run: bool) -> Result<bool> {
     let current = fs::read_to_string(path).unwrap_or_default();
-    let next = upsert_managed_entry(&current, &entry);
+    let next = upsert_managed_entry(&current, entry);
     if next == current {
         return Ok(false);
     }
@@ -54,7 +58,10 @@ fn ensure_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<bool> {
 }
 
 fn remove_from_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<bool> {
-    let entry = format!("/{}", target_rel.to_string_lossy().replace('\\', "/"));
+    remove_entry_file(path, &ignore_entry(target_rel), dry_run)
+}
+
+fn remove_entry_file(path: &Path, entry: &str, dry_run: bool) -> Result<bool> {
     let current = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -64,7 +71,7 @@ fn remove_from_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<boo
         }
     };
 
-    let next = remove_managed_entry(&current, &entry);
+    let next = remove_managed_entry(&current, entry);
     if next == current {
         return Ok(false);
     }
@@ -74,6 +81,14 @@ fn remove_from_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<boo
             .with_context(|| format!("failed to write exclude file {}", path.display()))?;
     }
     Ok(true)
+}
+
+fn ignore_entry(target_rel: &Path) -> String {
+    format!("/{}", target_rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn unignore_entry(target_rel: &Path) -> String {
+    format!("!/{}", target_rel.to_string_lossy().replace('\\', "/"))
 }
 
 fn upsert_managed_entry(current: &str, entry: &str) -> String {

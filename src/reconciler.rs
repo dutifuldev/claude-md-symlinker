@@ -73,6 +73,10 @@ fn reconcile_adapter(
     let target = repo.root.join(&adapter.target);
 
     if !source.exists() {
+        let target_state = materializer::classify(repo, adapter)?;
+        let managed_target =
+            target_is_managed(&target_state) || stored_hardlink_matches(repo, adapter, state)?;
+
         if adapter.on_source_missing == SourceMissingBehavior::RemoveIfManaged {
             if git::is_tracked(repo, &adapter.target)
                 .with_context(|| format!("failed to check tracked target {}", target.display()))?
@@ -96,8 +100,7 @@ fn reconcile_adapter(
                 return Ok((result, false));
             }
 
-            let target_state = materializer::classify(repo, adapter)?;
-            if target_is_managed(&target_state) {
+            if managed_target {
                 materializer::remove_target(repo, adapter, options.dry_run)?;
                 let exclude_updated = exclude::remove(
                     repo,
@@ -121,11 +124,30 @@ fn reconcile_adapter(
             }
         }
 
+        let unmanaged_target_exists = matches!(
+            target_state,
+            TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other
+        );
+        let exclude_updated = if managed_target || !unmanaged_target_exists {
+            false
+        } else {
+            exclude::remove(
+                repo,
+                &adapter.target,
+                config.git.exclude_mode,
+                options.dry_run,
+            )?
+        };
+
         let result = result_for(
             repo,
             adapter,
             Status::NoSource,
-            "source file does not exist",
+            if exclude_updated {
+                "source file does not exist; Git exclude removed"
+            } else {
+                "source file does not exist"
+            },
         );
         if !options.dry_run {
             record(
@@ -137,7 +159,7 @@ fn reconcile_adapter(
                 &result.message,
             )?;
         }
-        return Ok((result, false));
+        return Ok((result, exclude_updated));
     }
 
     if git::is_tracked(repo, &adapter.target)
@@ -288,6 +310,19 @@ fn recover_stale_hardlink(
     }
 
     Ok(Some((result, exclude_updated)))
+}
+
+fn stored_hardlink_matches(repo: &GitRepo, adapter: &Adapter, state: &State) -> Result<bool> {
+    let Some(stored) = state.get_shim(repo, &adapter.name, &adapter.target.to_string_lossy())?
+    else {
+        return Ok(false);
+    };
+
+    if stored.materialization.as_deref() != Some("hardlink") {
+        return Ok(false);
+    }
+
+    Ok(materializer::target_hash(repo, adapter)? == stored.content_hash)
 }
 
 fn target_is_managed(target_state: &TargetState) -> bool {

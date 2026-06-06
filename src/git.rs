@@ -65,6 +65,15 @@ pub fn is_tracked(repo: &GitRepo, rel_path: &Path) -> Result<bool> {
 }
 
 pub fn set_global_excludes_file(path: &Path) -> Result<()> {
+    if let Some(existing) = global_config_value("core.excludesFile")?
+        && Path::new(existing.trim()) != path
+    {
+        bail!(
+            "global core.excludesFile is already set to {}; refusing to overwrite it",
+            existing.trim()
+        );
+    }
+
     let status = Command::new("git")
         .arg("config")
         .arg("--global")
@@ -77,6 +86,24 @@ pub fn set_global_excludes_file(path: &Path) -> Result<()> {
         bail!("git config --global core.excludesFile failed");
     }
     Ok(())
+}
+
+fn global_config_value(key: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("config")
+        .arg("--global")
+        .arg("--get")
+        .arg(key)
+        .output()
+        .with_context(|| format!("failed to read global git config {key}"))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
 fn git_path(repo: &Path, args: &[&str]) -> Result<PathBuf> {

@@ -443,6 +443,75 @@ fn apply_remove_if_managed_removes_stale_shim_and_exclude() {
 }
 
 #[test]
+fn source_missing_with_user_file_removes_stale_exclude_even_when_leaving_managed_shims() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "user-owned replacement\n").unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
+fn remove_if_managed_cleans_stale_hardlink_after_source_deletion() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.cleaned, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+}
+
+#[test]
 fn linked_worktree_uses_worktree_exclude_file() {
     let fixture = Fixture::new();
     let main_repo = fixture.repo("main");
