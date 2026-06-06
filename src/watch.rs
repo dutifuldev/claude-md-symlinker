@@ -11,7 +11,7 @@ use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, W
 
 use crate::{
     adapters::{self, Adapter},
-    config::{self, AppConfig, LoadedConfig, ScanScope},
+    config::{self, AppConfig, LoadedConfig, ScanScope, WatchConfig},
     reconciler::{self, ReconcileOptions},
     reporting::print_plain,
     state::State,
@@ -53,18 +53,15 @@ pub fn run(
 
     run_once(&active, cli_roots, state, dry_run)?;
 
-    let event_poll_interval =
-        Duration::from_secs(active.config.watch.reconcile_interval_minutes.max(1) * 60);
-    let full_rescan_interval =
-        Duration::from_secs(active.config.watch.full_rescan_interval_hours.max(1) * 60 * 60);
     let debounce = Duration::from_millis(500);
     let mut last_run = Instant::now();
 
     loop {
-        let until_full_rescan = full_rescan_interval
+        let interval = periodic_interval(&active.config.watch);
+        let until_periodic_reconcile = interval
             .checked_sub(last_run.elapsed())
             .unwrap_or(Duration::ZERO);
-        let timeout = event_poll_interval.min(until_full_rescan.max(Duration::from_millis(1)));
+        let timeout = until_periodic_reconcile.max(Duration::from_millis(1));
 
         match rx.recv_timeout(timeout) {
             Ok(Ok(event)) => {
@@ -102,17 +99,15 @@ pub fn run(
                 tracing::warn!("watch error: {error}");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if last_run.elapsed() >= full_rescan_interval
-                    && reload_and_run(
-                        &mut active,
-                        &mut watcher,
-                        &mut watched,
-                        &config_path,
-                        cli_roots,
-                        state,
-                        dry_run,
-                    )?
-                {
+                if reload_and_run(
+                    &mut active,
+                    &mut watcher,
+                    &mut watched,
+                    &config_path,
+                    cli_roots,
+                    state,
+                    dry_run,
+                )? {
                     last_run = Instant::now();
                 }
             }
@@ -121,6 +116,12 @@ pub fn run(
             }
         }
     }
+}
+
+fn periodic_interval(config: &WatchConfig) -> Duration {
+    let reconcile = Duration::from_secs(config.reconcile_interval_minutes.max(1) * 60);
+    let full_rescan = Duration::from_secs(config.full_rescan_interval_hours.max(1) * 60 * 60);
+    reconcile.min(full_rescan)
 }
 
 fn reload_and_run(
@@ -304,14 +305,14 @@ fn has_excluded_dir_component(path: &Path, scope: &ScanScope) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, path::PathBuf};
+    use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
     use notify::{Event, EventKind, RecursiveMode, event::EventAttributes};
 
-    use super::{desired_watch_targets, event_is_relevant};
+    use super::{desired_watch_targets, event_is_relevant, periodic_interval};
     use crate::{
         adapters::Adapter,
-        config::{ScanScope, SourceMissingBehavior},
+        config::{ScanScope, SourceMissingBehavior, WatchConfig},
     };
 
     #[test]
@@ -414,6 +415,29 @@ mod tests {
         assert_eq!(
             targets.get(config_dir.path()),
             Some(&RecursiveMode::NonRecursive)
+        );
+    }
+
+    #[test]
+    fn periodic_interval_uses_shortest_configured_reconcile_interval() {
+        let default_like = WatchConfig {
+            enabled: true,
+            reconcile_interval_minutes: 30,
+            full_rescan_interval_hours: 12,
+        };
+        assert_eq!(
+            periodic_interval(&default_like),
+            Duration::from_secs(30 * 60)
+        );
+
+        let shorter_full_rescan = WatchConfig {
+            enabled: true,
+            reconcile_interval_minutes: 120,
+            full_rescan_interval_hours: 1,
+        };
+        assert_eq!(
+            periodic_interval(&shorter_full_rescan),
+            Duration::from_secs(60 * 60)
         );
     }
 

@@ -154,6 +154,27 @@ fn excluded_paths_are_not_scanned_or_modified() {
     assert!(!repo.join("CLAUDE.md").exists());
 }
 
+#[test]
+fn discovery_does_not_obey_ignore_files_inside_scan_roots() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.path().join(".ignore"), "repo/\n").unwrap();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.repos_scanned, 1);
+    assert_eq!(report.summary.created, 1);
+    assert!(repo.join("CLAUDE.md").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn absolute_symlink_to_agents_md_is_repaired_to_relative_symlink() {
@@ -1555,6 +1576,40 @@ fn source_missing_after_deleted_managed_target_removes_stale_exclude() {
 
     fs::write(repo.join("CLAUDE.md"), "new user claude\n").unwrap();
     assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
+fn source_missing_keeps_existing_managed_target_ignored() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(git_exclude_path(&repo)).unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    assert!(git_status(&repo, "CLAUDE.md").is_empty());
 }
 
 #[test]

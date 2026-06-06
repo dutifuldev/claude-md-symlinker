@@ -184,7 +184,14 @@ fn reconcile_adapter(
             TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other
         );
         let should_remove_exclude = unmanaged_target_exists || stale_missing_managed_target;
-        let exclude_updated = if target_can_be_removed || !should_remove_exclude {
+        let exclude_updated = if target_can_be_removed {
+            exclude::ensure(
+                repo,
+                &adapter.target,
+                config.git.exclude_mode,
+                options.dry_run,
+            )?
+        } else if !should_remove_exclude {
             false
         } else {
             exclude::remove(
@@ -200,7 +207,11 @@ fn reconcile_adapter(
             adapter,
             Status::NoSource,
             if exclude_updated {
-                "source file does not exist; Git exclude removed"
+                if target_can_be_removed {
+                    "source file does not exist; managed shim kept and Git exclude repaired"
+                } else {
+                    "source file does not exist; Git exclude removed"
+                }
             } else {
                 "source file does not exist"
             },

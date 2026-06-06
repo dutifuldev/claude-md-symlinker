@@ -15,6 +15,12 @@ pub fn discover(scope: &ScanScope) -> Result<Vec<GitRepo>> {
     for root in &scope.roots {
         let mut builder = WalkBuilder::new(root);
         builder.hidden(false);
+        builder
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .parents(false);
         let exclude_paths = scope.exclude_paths.clone();
         let exclude_dir_names = scope.exclude_dir_names.clone();
         builder.filter_entry(move |entry| should_visit(&exclude_paths, &exclude_dir_names, entry));
