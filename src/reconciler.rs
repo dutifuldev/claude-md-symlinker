@@ -243,7 +243,14 @@ fn reconcile_adapter(
         return Ok((result, false));
     }
 
-    match materializer::classify(repo, adapter)? {
+    let target_state = materializer::classify(repo, adapter)?;
+    if matches!(target_state, TargetState::ManagedHardlink)
+        && stored_managed_kind(repo, adapter, state)? != Some(MaterializationKind::Hardlink)
+    {
+        return unmanaged_conflict(config, repo, adapter, state, options);
+    }
+
+    match target_state {
         TargetState::UnknownRegularFile => {
             unmanaged_conflict(config, repo, adapter, state, options)
         }

@@ -431,6 +431,29 @@ fn adapter_paths_cannot_point_inside_git_internals_with_mixed_case() {
     assert!(!repo.join(".git/hooks/pre-commit").exists());
 }
 
+#[test]
+fn adapter_paths_cannot_contain_control_characters() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from("CLAUDE.md\nfoo");
+
+    let error = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("control characters"));
+    assert!(!repo.join("CLAUDE.md\nfoo").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.contains("foo"));
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_target_parent_outside_repo_is_rejected() {
@@ -920,6 +943,64 @@ fn hardlink_materialization_conflicts_after_source_replacement() {
     assert_eq!(report.summary.exclude_updates, 1);
     assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
     assert!(!same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+}
+
+#[test]
+fn preexisting_untracked_hardlink_is_conflict_without_state() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    fs::hard_link(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Copy;
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(report.summary.repaired, 0);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
+    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[test]
+fn managed_hardlink_is_idempotent_with_state() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.kept, 1);
+    assert_eq!(report.summary.conflicts, 0);
+    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
 }
 
 #[test]

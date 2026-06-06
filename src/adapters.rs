@@ -59,9 +59,16 @@ fn validate_repo_relative_path(adapter_name: &str, field: &str, path: &Path) -> 
     for component in path.components() {
         match component {
             Component::Normal(part) => {
-                if part.to_string_lossy().eq_ignore_ascii_case(".git") {
+                let part = part.to_string_lossy();
+                if part.eq_ignore_ascii_case(".git") {
                     bail!(
                         "{adapter_name} adapter {field} path must not point inside Git internals: {}",
+                        path.display()
+                    );
+                }
+                if part.chars().any(char::is_control) {
+                    bail!(
+                        "{adapter_name} adapter {field} path must not contain control characters: {}",
                         path.display()
                     );
                 }

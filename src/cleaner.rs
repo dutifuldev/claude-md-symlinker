@@ -71,8 +71,13 @@ fn clean_adapter(
     shared_exclude: bool,
 ) -> Result<(RepoResult, bool)> {
     let source_exists = repo.root.join(&adapter.source).exists();
-    let target_state = materializer::classify(repo, adapter)?;
+    let mut target_state = materializer::classify(repo, adapter)?;
     let stored_kind = stored_managed_kind(repo, adapter, state)?;
+    if matches!(target_state, TargetState::ManagedHardlink)
+        && stored_kind != Some(MaterializationKind::Hardlink)
+    {
+        target_state = TargetState::UnknownRegularFile;
+    }
     let unmanaged_target_exists = matches!(
         target_state,
         TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other
