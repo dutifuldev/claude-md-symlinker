@@ -1,0 +1,105 @@
+use std::{collections::BTreeSet, fs, path::Path};
+
+use anyhow::{Context, Result};
+
+use crate::{
+    config::{ExcludeMode, data_dir},
+    git::{self, GitRepo},
+};
+
+const BEGIN: &str = "# claudectomy managed begin";
+const END: &str = "# claudectomy managed end";
+
+pub fn ensure(repo: &GitRepo, target_rel: &Path, mode: ExcludeMode, dry_run: bool) -> Result<bool> {
+    match mode {
+        ExcludeMode::PerRepo => ensure_file(&repo.exclude_path, target_rel, dry_run),
+        ExcludeMode::Global => {
+            let path = data_dir()?.join("git-excludes");
+            let updated = ensure_file(&path, target_rel, dry_run)?;
+            if updated && !dry_run {
+                git::set_global_excludes_file(&path)?;
+            }
+            Ok(updated)
+        }
+    }
+}
+
+fn ensure_file(path: &Path, target_rel: &Path, dry_run: bool) -> Result<bool> {
+    let entry = format!("/{}", target_rel.to_string_lossy().replace('\\', "/"));
+    let current = fs::read_to_string(path).unwrap_or_default();
+    let next = upsert_managed_entry(&current, &entry);
+    if next == current {
+        return Ok(false);
+    }
+
+    if !dry_run {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create exclude dir {}", parent.display()))?;
+        }
+        fs::write(path, next)
+            .with_context(|| format!("failed to write exclude file {}", path.display()))?;
+    }
+    Ok(true)
+}
+
+fn upsert_managed_entry(current: &str, entry: &str) -> String {
+    let mut entries = BTreeSet::new();
+    entries.insert(entry.to_string());
+
+    let lines: Vec<&str> = current.lines().collect();
+    let begin = lines.iter().position(|line| *line == BEGIN);
+    let end = lines.iter().position(|line| *line == END);
+
+    if let (Some(begin), Some(end)) = (begin, end)
+        && begin < end
+    {
+        for line in &lines[begin + 1..end] {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                entries.insert(trimmed.to_string());
+            }
+        }
+
+        let mut replacement = vec![BEGIN.to_string()];
+        replacement.extend(entries);
+        replacement.push(END.to_string());
+
+        let mut out = Vec::<String>::new();
+        out.extend(lines[..begin].iter().map(|line| (*line).to_string()));
+        out.extend(replacement);
+        out.extend(lines[end + 1..].iter().map(|line| (*line).to_string()));
+        return with_trailing_newline(out.join("\n"));
+    }
+
+    let mut out = current.trim_end_matches('\n').to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(BEGIN);
+    out.push('\n');
+    out.push_str(entry);
+    out.push('\n');
+    out.push_str(END);
+    out.push('\n');
+    out
+}
+
+fn with_trailing_newline(mut text: String) -> String {
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upsert_managed_entry;
+
+    #[test]
+    fn upsert_is_idempotent() {
+        let once = upsert_managed_entry("existing\n", "/CLAUDE.md");
+        let twice = upsert_managed_entry(&once, "/CLAUDE.md");
+        assert_eq!(once, twice);
+    }
+}
