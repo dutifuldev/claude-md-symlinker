@@ -95,7 +95,9 @@ fn ensure_entry_file(path: &Path, entry: &str, dry_run: bool) -> Result<bool> {
         return Ok(false);
     }
 
-    if !dry_run {
+    if dry_run {
+        validate_exclude_writable(path)?;
+    } else {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create exclude dir {}", parent.display()))?;
@@ -125,11 +127,38 @@ fn remove_entry_file(path: &Path, entry: &str, dry_run: bool) -> Result<bool> {
         return Ok(false);
     }
 
-    if !dry_run {
+    if dry_run {
+        validate_exclude_writable(path)?;
+    } else {
         fs::write(path, next)
             .with_context(|| format!("failed to write exclude file {}", path.display()))?;
     }
     Ok(true)
+}
+
+fn validate_exclude_writable(path: &Path) -> Result<()> {
+    if path.exists() {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("failed to inspect exclude file {}", path.display()))?;
+        if metadata.permissions().readonly() {
+            bail!("exclude file {} is not writable", path.display());
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        let metadata = fs::metadata(parent)
+            .with_context(|| format!("failed to inspect exclude dir {}", parent.display()))?;
+        if !metadata.is_dir() {
+            bail!("exclude dir {} is not a directory", parent.display());
+        }
+        if metadata.permissions().readonly() {
+            bail!("exclude dir {} is not writable", parent.display());
+        }
+    }
+    Ok(())
 }
 
 fn ignore_entry(target_rel: &Path) -> String {

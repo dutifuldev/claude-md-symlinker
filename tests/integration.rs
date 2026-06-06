@@ -938,6 +938,57 @@ fn copy_materialization_preserves_source_permissions() {
     );
 }
 
+#[test]
+fn clean_removes_readonly_managed_copy() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let source = repo.join("AGENTS.md");
+    fs::write(&source, "read-only instructions\n").unwrap();
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&source, permissions).unwrap();
+
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Copy;
+    let state = fixture.state();
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let mut source_permissions = fs::metadata(&source).unwrap().permissions();
+        source_permissions.set_readonly(false);
+        fs::set_permissions(&source, source_permissions).unwrap();
+    }
+    fs::remove_file(&source).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.cleaned, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn dry_run_copy_refresh_reports_readonly_target_refresh() {
@@ -2514,6 +2565,92 @@ fn remove_if_managed_invalid_exclude_leaves_managed_target_in_place() {
     assert_eq!(report.summary.errors, 1);
     assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
     assert_eq!(fs::read(&exclude_path).unwrap(), invalid_exclude);
+}
+
+#[cfg(unix)]
+#[test]
+fn remove_if_managed_unwritable_exclude_leaves_managed_target_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let exclude_path = git_exclude_path(&repo);
+    let original_permissions = fs::metadata(&exclude_path).unwrap().permissions();
+    fs::set_permissions(&exclude_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    );
+
+    fs::set_permissions(&exclude_path, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.cleaned, 0);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    let exclude_text = fs::read_to_string(&exclude_path).unwrap();
+    assert!(exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_unwritable_exclude_leaves_managed_target_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let exclude_path = git_exclude_path(&repo);
+    let original_permissions = fs::metadata(&exclude_path).unwrap().permissions();
+    fs::set_permissions(&exclude_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    );
+
+    fs::set_permissions(&exclude_path, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.cleaned, 0);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    let exclude_text = fs::read_to_string(&exclude_path).unwrap();
+    assert!(exclude_text.lines().any(|line| line == "/CLAUDE.md"));
 }
 
 #[cfg(unix)]

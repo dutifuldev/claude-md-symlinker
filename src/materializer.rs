@@ -188,8 +188,7 @@ pub fn remove_target(repo: &GitRepo, adapter: &Adapter, dry_run: bool) -> Result
 
     create_parent_dir(repo, &target)?;
     if !dry_run {
-        fs::remove_file(&target)
-            .with_context(|| format!("failed to remove {}", target.display()))?;
+        remove_file(&target)?;
     }
     Ok(true)
 }
@@ -336,8 +335,7 @@ fn replace_with_kind(
 
     if !dry_run {
         if fs::symlink_metadata(&target).is_ok() {
-            fs::remove_file(&target)
-                .with_context(|| format!("failed to remove {}", target.display()))?;
+            remove_file(&target)?;
         }
         match kind {
             MaterializationKind::Symlink => create_symlink(repo, adapter)?,
@@ -350,6 +348,32 @@ fn replace_with_kind(
         kind,
         changed: true,
     })
+}
+
+fn remove_file(path: &Path) -> Result<()> {
+    clear_readonly_for_removal(path)?;
+    fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_readonly_for_removal(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.is_file() && !metadata.file_type().is_symlink() {
+        let mut permissions = metadata.permissions();
+        if permissions.readonly() {
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)
+                .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn clear_readonly_for_removal(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn planned_auto_kind(config: &MaterializationConfig) -> MaterializationKind {
