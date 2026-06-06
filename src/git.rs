@@ -50,18 +50,29 @@ pub fn discover_repo(path: &Path) -> Result<Option<GitRepo>> {
 }
 
 pub fn is_tracked(repo: &GitRepo, rel_path: &Path) -> Result<bool> {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .arg("-C")
         .arg(&repo.root)
         .arg("ls-files")
         .arg("--error-unmatch")
         .arg("--")
         .arg(rel_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .with_context(|| format!("failed to run git ls-files in {}", repo.root.display()))?;
-    Ok(status.success())
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "git ls-files failed for {} in {}: {}",
+                rel_path.display(),
+                repo.root.display(),
+                stderr.trim()
+            );
+        }
+    }
 }
 
 pub fn ensure_global_excludes_file(path: &Path, dry_run: bool) -> Result<bool> {

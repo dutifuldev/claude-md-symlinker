@@ -123,6 +123,9 @@ pub fn create_or_refresh(
             if desired != MaterializationKind::Copy {
                 return replace_with_kind(repo, adapter, desired, dry_run);
             }
+            if refresh_needed {
+                validate_existing_target_for_write(repo, adapter)?;
+            }
             if refresh_needed && !dry_run {
                 write_managed_copy(repo, adapter)?;
             }
@@ -136,9 +139,12 @@ pub fn create_or_refresh(
             if desired != MaterializationKind::Symlink {
                 return replace_with_kind(repo, adapter, desired, dry_run);
             }
-            if repair_needed && !dry_run {
+            if repair_needed {
                 let target = repo.root.join(&adapter.target);
                 create_parent_dir(repo, &target)?;
+            }
+            if repair_needed && !dry_run {
+                let target = repo.root.join(&adapter.target);
                 fs::remove_file(&target)
                     .with_context(|| format!("failed to remove {}", target.display()))?;
                 create_symlink(repo, adapter)?;
@@ -386,6 +392,20 @@ fn write_managed_copy(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
     Ok(())
 }
 
+fn validate_existing_target_for_write(repo: &GitRepo, adapter: &Adapter) -> Result<()> {
+    let target = repo.root.join(&adapter.target);
+    validate_parent_dir(repo, &target)?;
+    let metadata =
+        fs::metadata(&target).with_context(|| format!("failed to inspect {}", target.display()))?;
+    if !metadata.is_file() {
+        bail!("target {} is not a regular file", target.display());
+    }
+    if metadata.permissions().readonly() {
+        bail!("target {} is not writable", target.display());
+    }
+    Ok(())
+}
+
 fn managed_copy_bytes(repo: &GitRepo, adapter: &Adapter) -> Result<Vec<u8>> {
     let source = repo.root.join(&adapter.source);
     let mut bytes = managed_copy_header(adapter).into_bytes();
@@ -506,6 +526,9 @@ fn target_parent_contains_symlink(repo: &GitRepo, path: &Path) -> Result<bool> {
 fn ensure_writable_directory(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("failed to inspect target parent {}", path.display()))?;
+    if !metadata.is_dir() {
+        bail!("target parent {} is not a directory", path.display());
+    }
     if metadata.permissions().readonly() {
         bail!("target parent {} is not writable", path.display());
     }

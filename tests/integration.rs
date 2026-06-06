@@ -270,6 +270,58 @@ fn tracked_claude_md_is_not_changed_or_ignored() {
     assert!(!exclude_text.contains("/CLAUDE.md"));
 }
 
+#[test]
+fn tracked_deleted_claude_md_is_not_recreated() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    fs::write(repo.join("CLAUDE.md"), "tracked claude file\n").unwrap();
+    git(&repo, &["add", "CLAUDE.md"]);
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.tracked_conflicts, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "AD CLAUDE.md\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn git_tracked_check_failure_is_reported_as_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    fs::write(repo.join("CLAUDE.md"), "tracked claude file\n").unwrap();
+    git(&repo, &["add", "CLAUDE.md"]);
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    let index_path = repo.join(".git/index");
+    let original_permissions = fs::metadata(&index_path).unwrap().permissions();
+    fs::set_permissions(&index_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    );
+
+    fs::set_permissions(&index_path, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn unknown_broken_symlink_is_not_removed_when_source_is_missing() {
@@ -344,6 +396,27 @@ fn adapter_paths_cannot_point_inside_git_internals() {
     fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
     let mut config = fixture.config();
     config.adapters.claude.target = PathBuf::from(".git/hooks/pre-commit");
+
+    let error = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("Git internals"));
+    assert!(!repo.join(".git/hooks/pre-commit").exists());
+}
+
+#[test]
+fn adapter_paths_cannot_point_inside_git_internals_with_mixed_case() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".GIT/hooks/pre-commit");
 
     let error = reconciler::apply(
         &config,
@@ -434,6 +507,34 @@ fn symlinked_target_parent_inside_repo_is_rejected() {
 
     assert_eq!(report.summary.errors, 1);
     assert!(!repo.join("docs/subdir/CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(
+        !exclude_text
+            .lines()
+            .any(|line| line == "/.claude/CLAUDE.md")
+    );
+}
+
+#[test]
+fn dry_run_rejects_target_parent_that_is_file() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    fs::write(repo.join(".claude"), "not a directory\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".claude/CLAUDE.md");
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: true },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.created, 0);
     let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
     assert!(
         !exclude_text
@@ -673,6 +774,71 @@ fn copy_materialization_refreshes_managed_copy() {
     let text = fs::read_to_string(repo.join("CLAUDE.md")).unwrap();
     assert!(text.contains("claudectomy managed"));
     assert!(text.ends_with("v2\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn dry_run_copy_refresh_rejects_unwritable_target() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Copy;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::write(repo.join("AGENTS.md"), "v2\n").unwrap();
+    fs::set_permissions(repo.join("CLAUDE.md"), fs::Permissions::from_mode(0o444)).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: true },
+    );
+
+    fs::set_permissions(repo.join("CLAUDE.md"), fs::Permissions::from_mode(0o644)).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.refreshed, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn dry_run_symlink_repair_rejects_unwritable_parent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let source = repo.join("AGENTS.md");
+    fs::write(&source, "canonical instructions\n").unwrap();
+    std::os::unix::fs::symlink(&source, repo.join("CLAUDE.md")).unwrap();
+    let original_permissions = fs::metadata(&repo).unwrap().permissions();
+    fs::set_permissions(&repo, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: true },
+    );
+
+    fs::set_permissions(&repo, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.repaired, 0);
+    assert_eq!(fs::read_link(repo.join("CLAUDE.md")).unwrap(), source);
 }
 
 #[test]
@@ -1846,6 +2012,88 @@ fn remove_if_managed_invalid_exclude_leaves_managed_target_in_place() {
     assert_eq!(report.summary.errors, 1);
     assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
     assert_eq!(fs::read(&exclude_path).unwrap(), invalid_exclude);
+}
+
+#[cfg(unix)]
+#[test]
+fn remove_if_managed_target_removal_failure_preserves_exclude() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let original_permissions = fs::metadata(&repo).unwrap().permissions();
+    fs::set_permissions(&repo, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    );
+
+    fs::set_permissions(&repo, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap();
+    assert!(exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_target_removal_failure_preserves_exclude() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let original_permissions = fs::metadata(&repo).unwrap().permissions();
+    fs::set_permissions(&repo, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    );
+
+    fs::set_permissions(&repo, original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap();
+    assert!(exclude_text.lines().any(|line| line == "/CLAUDE.md"));
 }
 
 #[test]

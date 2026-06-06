@@ -168,14 +168,18 @@ fn clean_adapter(
         return Ok((result, false));
     }
 
-    let should_update_exclude = target_can_be_removed || stale_missing_managed_target;
-    let exclude_updated = if should_update_exclude {
-        crate::exclude::remove(repo, &adapter.target, exclude_mode, options.dry_run)?
+    if target_can_be_removed {
+        crate::exclude::remove(repo, &adapter.target, exclude_mode, true)?;
+    }
+    let removed = if target_can_be_removed {
+        materializer::remove_target(repo, adapter, options.dry_run)?
     } else {
         false
     };
-    let removed = if target_can_be_removed {
-        materializer::remove_target(repo, adapter, options.dry_run)?
+    let should_update_exclude =
+        stale_missing_managed_target || removed || (target_can_be_removed && options.dry_run);
+    let exclude_updated = if should_update_exclude {
+        crate::exclude::remove(repo, &adapter.target, exclude_mode, options.dry_run)?
     } else {
         false
     };

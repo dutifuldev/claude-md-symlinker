@@ -116,14 +116,24 @@ fn reconcile_adapter(
             }
 
             if target_can_be_removed || stale_missing_managed_target {
-                let exclude_updated = exclude::remove(
-                    repo,
-                    &adapter.target,
-                    config.git.exclude_mode,
-                    options.dry_run,
-                )?;
+                if target_can_be_removed {
+                    exclude::remove(repo, &adapter.target, config.git.exclude_mode, true)?;
+                }
                 let removed = if target_can_be_removed {
                     materializer::remove_target(repo, adapter, options.dry_run)?
+                } else {
+                    false
+                };
+                let should_remove_exclude = stale_missing_managed_target
+                    || removed
+                    || (target_can_be_removed && options.dry_run);
+                let exclude_updated = if should_remove_exclude {
+                    exclude::remove(
+                        repo,
+                        &adapter.target,
+                        config.git.exclude_mode,
+                        options.dry_run,
+                    )?
                 } else {
                     false
                 };
