@@ -109,7 +109,7 @@ fn run() -> Result<u8> {
         }
         cli::Command::Doctor => {
             let loaded = config::load(args.config.as_deref())?;
-            let report = DoctorReport::run(&loaded)?;
+            let report = DoctorReport::run(&loaded, args.dry_run)?;
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {

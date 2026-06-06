@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::ErrorKind,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
 use anyhow::{Context, Result, bail};
@@ -62,8 +62,23 @@ pub fn classify(repo: &GitRepo, adapter: &Adapter) -> Result<TargetState> {
         return Ok(TargetState::Missing);
     };
 
+    if target_parent_contains_symlink(repo, &target)? {
+        return Ok(if metadata.file_type().is_symlink() {
+            TargetState::UnknownSymlink
+        } else if metadata.is_file() {
+            TargetState::UnknownRegularFile
+        } else {
+            TargetState::Other
+        });
+    }
+
     if metadata.file_type().is_symlink() {
-        return if symlink_points_to(&target, &source)? {
+        return if symlink_points_to(
+            repo,
+            &target,
+            &source,
+            &desired_symlink_target(repo, adapter),
+        )? {
             Ok(TargetState::ManagedSymlink {
                 repair_needed: fs::read_link(&target)? != desired_symlink_target(repo, adapter),
             })
@@ -164,33 +179,8 @@ pub fn remove_target(repo: &GitRepo, adapter: &Adapter, dry_run: bool) -> Result
     Ok(true)
 }
 
-pub fn recreate_hardlink(
-    repo: &GitRepo,
-    adapter: &Adapter,
-    dry_run: bool,
-) -> Result<MaterializeOutcome> {
-    let target = repo.root.join(&adapter.target);
-    create_parent_dir(repo, &target)?;
-    if !dry_run {
-        if fs::symlink_metadata(&target).is_ok() {
-            fs::remove_file(&target)
-                .with_context(|| format!("failed to remove {}", target.display()))?;
-        }
-        create_hardlink(repo, adapter)?;
-    }
-
-    Ok(MaterializeOutcome {
-        kind: MaterializationKind::Hardlink,
-        changed: true,
-    })
-}
-
 pub fn source_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> {
     file_hash(&repo.root.join(&adapter.source))
-}
-
-pub fn target_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> {
-    file_hash(&repo.root.join(&adapter.target))
 }
 
 fn file_hash(path: &Path) -> Result<Option<String>> {
@@ -415,45 +405,29 @@ fn is_managed_copy(bytes: &[u8], adapter: &Adapter) -> bool {
         .unwrap_or(false)
 }
 
-fn symlink_points_to(target: &Path, source: &Path) -> Result<bool> {
+fn symlink_points_to(
+    repo: &GitRepo,
+    target: &Path,
+    source: &Path,
+    desired_link: &Path,
+) -> Result<bool> {
     let link = fs::read_link(target)
         .with_context(|| format!("failed to read symlink {}", target.display()))?;
     let resolved = if link.is_absolute() {
-        link
+        link.clone()
     } else {
-        target.parent().unwrap_or(Path::new(".")).join(link)
+        target.parent().unwrap_or(Path::new(".")).join(&link)
     };
 
-    if paths_match_lexically(&resolved, source) {
+    if let (Ok(resolved), Ok(source)) = (resolved.canonicalize(), source.canonicalize()) {
+        return Ok(resolved == source);
+    }
+
+    if link == desired_link && !target_parent_contains_symlink(repo, target)? {
         return Ok(true);
     }
 
-    match (resolved.canonicalize(), source.canonicalize()) {
-        (Ok(resolved), Ok(source)) => Ok(resolved == source),
-        _ => Ok(false),
-    }
-}
-
-fn paths_match_lexically(left: &Path, right: &Path) -> bool {
-    lexical_normalize(left) == lexical_normalize(right)
-}
-
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-
-    normalized
+    Ok(false)
 }
 
 fn create_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
@@ -473,6 +447,7 @@ fn create_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
 
 fn validate_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
+        ensure_no_symlinked_target_parent(repo, path)?;
         let repo_root = repo
             .root
             .canonicalize()
@@ -483,6 +458,49 @@ fn validate_parent_dir(repo: &GitRepo, path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn ensure_no_symlinked_target_parent(repo: &GitRepo, path: &Path) -> Result<()> {
+    if target_parent_contains_symlink(repo, path)? {
+        bail!(
+            "target parent for {} contains a symlink; refusing to write because the Git exclude path would not match the real file",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn target_parent_contains_symlink(repo: &GitRepo, path: &Path) -> Result<bool> {
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    let Ok(relative_parent) = parent.strip_prefix(&repo.root) else {
+        return Ok(false);
+    };
+
+    let mut current = repo.root.clone();
+    for component in relative_parent.components() {
+        match component {
+            Component::Normal(part) => current.push(part),
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return Ok(false),
+        }
+
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect target parent {}", current.display())
+                });
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn ensure_writable_directory(path: &Path) -> Result<()> {

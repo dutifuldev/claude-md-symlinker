@@ -412,6 +412,104 @@ fn symlinked_target_parent_outside_repo_is_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_target_parent_inside_repo_is_rejected() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    fs::create_dir_all(repo.join("docs/subdir")).unwrap();
+    std::os::unix::fs::symlink("docs/subdir", repo.join(".claude")).unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".claude/CLAUDE.md");
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.errors, 1);
+    assert!(!repo.join("docs/subdir/CLAUDE.md").exists());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(
+        !exclude_text
+            .lines()
+            .any(|line| line == "/.claude/CLAUDE.md")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_target_under_symlinked_parent_is_conflict() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let source = repo.join("AGENTS.md");
+    fs::write(&source, "canonical instructions\n").unwrap();
+    fs::create_dir_all(repo.join("docs/subdir")).unwrap();
+    std::os::unix::fs::symlink("docs/subdir", repo.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&source, repo.join("docs/subdir/CLAUDE.md")).unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from(".claude/CLAUDE.md");
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(
+        fs::read_link(repo.join("docs/subdir/CLAUDE.md")).unwrap(),
+        source
+    );
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(
+        !exclude_text
+            .lines()
+            .any(|line| line == "/.claude/CLAUDE.md")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_with_lexical_match_through_symlinked_component_is_conflict() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir_all(outside.path().join("inner")).unwrap();
+    fs::write(outside.path().join("AGENTS.md"), "outside\n").unwrap();
+    fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("inner"), repo.join("out")).unwrap();
+    std::os::unix::fs::symlink("out/../AGENTS.md", repo.join("CLAUDE.md")).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(
+        fs::read_link(repo.join("CLAUDE.md")).unwrap(),
+        PathBuf::from("out/../AGENTS.md")
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("CLAUDE.md")).unwrap(),
+        "outside\n"
+    );
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
 #[test]
 fn target_with_gitignore_metacharacters_is_excluded_literally() {
     let fixture = Fixture::new();
@@ -623,7 +721,7 @@ fn explicit_copy_strategy_replaces_existing_managed_symlink() {
 }
 
 #[test]
-fn hardlink_materialization_recovers_after_source_replacement() {
+fn hardlink_materialization_conflicts_after_source_replacement() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -652,9 +750,85 @@ fn hardlink_materialization_recovers_after_source_replacement() {
     )
     .unwrap();
 
-    assert_eq!(report.summary.repaired, 1);
-    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v2\n");
-    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
+    assert!(!same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+}
+
+#[test]
+fn hardlink_replacement_with_same_contents_is_not_reclaimed() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "v1\n").unwrap();
+    fs::write(repo.join("AGENTS.md"), "v2\n").unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
+    assert!(!same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+}
+
+#[test]
+fn remove_if_managed_does_not_delete_same_content_hardlink_replacement() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "v1\n").unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.cleaned, 0);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
 }
 
 #[test]
@@ -950,7 +1124,7 @@ fn source_missing_after_deleted_managed_target_removes_stale_exclude() {
 }
 
 #[test]
-fn remove_if_managed_cleans_stale_hardlink_after_source_deletion() {
+fn remove_if_managed_does_not_clean_unprovable_stale_hardlink_after_source_deletion() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -979,9 +1153,9 @@ fn remove_if_managed_cleans_stale_hardlink_after_source_deletion() {
     )
     .unwrap();
 
-    assert_eq!(report.summary.cleaned, 1);
+    assert_eq!(report.summary.no_source, 1);
     assert_eq!(report.summary.exclude_updates, 1);
-    assert!(!repo.join("CLAUDE.md").exists());
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]
@@ -1022,7 +1196,7 @@ fn stale_hardlink_state_does_not_claim_directory_replacement() {
 }
 
 #[test]
-fn clean_removes_stale_hardlink_after_source_deletion() {
+fn clean_does_not_remove_unprovable_stale_hardlink_after_source_deletion() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -1053,9 +1227,9 @@ fn clean_removes_stale_hardlink_after_source_deletion() {
     )
     .unwrap();
 
-    assert_eq!(report.summary.cleaned, 1);
+    assert_eq!(report.summary.no_source, 1);
     assert_eq!(report.summary.exclude_updates, 1);
-    assert!(!repo.join("CLAUDE.md").exists());
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]
@@ -1098,7 +1272,7 @@ fn clean_does_not_claim_directory_replacement_from_stale_hardlink_state() {
 }
 
 #[test]
-fn apply_no_source_does_not_forget_stale_hardlink_ownership() {
+fn apply_no_source_drops_unprovable_stale_hardlink_ownership() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -1137,13 +1311,13 @@ fn apply_no_source_does_not_forget_stale_hardlink_ownership() {
     )
     .unwrap();
 
-    assert_eq!(report.summary.cleaned, 1);
-    assert_eq!(report.summary.exclude_updates, 1);
-    assert!(!repo.join("CLAUDE.md").exists());
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.cleaned, 0);
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]
-fn clean_preview_does_not_forget_stale_hardlink_ownership() {
+fn clean_preview_drops_unprovable_stale_hardlink_ownership() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -1187,12 +1361,13 @@ fn clean_preview_does_not_forget_stale_hardlink_ownership() {
     )
     .unwrap();
 
-    assert_eq!(cleaned.summary.cleaned, 1);
-    assert!(!repo.join("CLAUDE.md").exists());
+    assert_eq!(cleaned.summary.no_source, 1);
+    assert_eq!(cleaned.summary.cleaned, 0);
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]
-fn clean_does_not_forget_stale_hardlink_after_source_replacement() {
+fn clean_does_not_reclaim_hardlink_after_source_replacement() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -1225,7 +1400,7 @@ fn clean_does_not_forget_stale_hardlink_after_source_replacement() {
     .unwrap();
     assert_eq!(preview.summary.kept, 1);
 
-    let repaired = reconciler::apply(
+    let conflict = reconciler::apply(
         &config,
         false,
         &[],
@@ -1234,13 +1409,14 @@ fn clean_does_not_forget_stale_hardlink_after_source_replacement() {
     )
     .unwrap();
 
-    assert_eq!(repaired.summary.repaired, 1);
-    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v2\n");
-    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+    assert_eq!(conflict.summary.conflicts, 1);
+    assert_eq!(conflict.summary.exclude_updates, 1);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v1\n");
+    assert!(!same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
 }
 
 #[test]
-fn cli_dry_run_clean_reads_existing_state_for_hardlinks() {
+fn cli_dry_run_clean_does_not_remove_stale_hardlinks_by_state() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
@@ -1285,7 +1461,8 @@ fn cli_dry_run_clean_reads_existing_state_for_hardlinks() {
         String::from_utf8_lossy(&dry_run.stderr)
     );
     let dry_run_json: serde_json::Value = serde_json::from_slice(&dry_run.stdout).unwrap();
-    assert_eq!(dry_run_json["summary"]["cleaned"], 1);
+    assert_eq!(dry_run_json["summary"]["no_source"], 1);
+    assert_eq!(dry_run_json["summary"]["cleaned"], 0);
     assert!(repo.join("CLAUDE.md").exists());
 
     let clean = Command::new(bin)
@@ -1303,7 +1480,7 @@ fn cli_dry_run_clean_reads_existing_state_for_hardlinks() {
         "clean failed: {}",
         String::from_utf8_lossy(&clean.stderr)
     );
-    assert!(!repo.join("CLAUDE.md").exists());
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]
@@ -1414,6 +1591,36 @@ fn doctor_fails_when_global_mode_is_configured() {
     let stdout = String::from_utf8_lossy(&doctor.stdout);
     assert!(stdout.contains("fail\tconfig"));
     assert!(stdout.contains("global exclude mode is disabled"));
+}
+
+#[test]
+fn doctor_dry_run_does_not_create_state() {
+    let fixture = Fixture::new();
+    let config_path = fixture.root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!("[scan]\nroots = [\"{}\"]\n", fixture.root.path().display()),
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudectomy");
+
+    let doctor = Command::new(bin)
+        .env("CLAUDECTOMY_DATA_DIR", fixture.data.path())
+        .args([
+            "--dry-run",
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+        ])
+        .output()
+        .expect("doctor runs");
+
+    assert!(
+        doctor.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    assert!(fs::read_dir(fixture.data.path()).unwrap().next().is_none());
 }
 
 #[test]
@@ -1760,6 +1967,27 @@ fn cli_roots_cannot_escape_configured_scope() {
 
     assert!(error.to_string().contains("outside configured scan scope"));
     assert!(!outside_repo.join("CLAUDE.md").exists());
+}
+
+#[test]
+fn cli_roots_require_configured_scope_when_config_exists() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
+    let mut config = fixture.config();
+    config.scan.roots = vec![];
+
+    let error = reconciler::apply(
+        &config,
+        true,
+        &[fixture.root.path().to_path_buf()],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("no scan roots are configured"));
+    assert!(!repo.join("CLAUDE.md").exists());
 }
 
 fn git_init(repo: &Path) {

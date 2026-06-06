@@ -25,7 +25,7 @@ pub struct DoctorCheck {
 }
 
 impl DoctorReport {
-    pub fn run(loaded: &LoadedConfig) -> Result<Self> {
+    pub fn run(loaded: &LoadedConfig, dry_run: bool) -> Result<Self> {
         let mut checks = Vec::new();
 
         checks.push(check(
@@ -37,31 +37,22 @@ impl DoctorReport {
 
         checks.push(config_check(loaded));
 
-        checks.push(match config::data_dir() {
-            Ok(dir) => match fs::create_dir_all(&dir) {
-                Ok(()) => DoctorCheck {
-                    name: "data_dir".to_string(),
-                    ok: true,
-                    message: format!("data directory is writable: {}", dir.display()),
-                },
-                Err(error) => DoctorCheck {
-                    name: "data_dir".to_string(),
-                    ok: false,
-                    message: format!("data directory is not writable: {error}"),
-                },
-            },
-            Err(error) => DoctorCheck {
-                name: "data_dir".to_string(),
-                ok: false,
-                message: error.to_string(),
-            },
-        });
+        checks.push(data_dir_check(dry_run));
 
-        checks.push(match State::open_default() {
+        let state_result = if dry_run {
+            State::open_default_read_only_if_exists()
+        } else {
+            State::open_default()
+        };
+        checks.push(match state_result {
             Ok(_) => DoctorCheck {
                 name: "state".to_string(),
                 ok: true,
-                message: "SQLite state opened successfully".to_string(),
+                message: if dry_run {
+                    "SQLite state is readable or absent".to_string()
+                } else {
+                    "SQLite state opened successfully".to_string()
+                },
             },
             Err(error) => DoctorCheck {
                 name: "state".to_string(),
@@ -125,6 +116,52 @@ impl DoctorReport {
             let status = if check.ok { "ok" } else { "fail" };
             println!("{status}\t{}\t{}", check.name, check.message);
         }
+    }
+}
+
+fn data_dir_check(dry_run: bool) -> DoctorCheck {
+    match config::data_dir() {
+        Ok(dir) if dry_run && !dir.exists() => DoctorCheck {
+            name: "data_dir".to_string(),
+            ok: true,
+            message: format!("data directory would be created: {}", dir.display()),
+        },
+        Ok(dir) if dry_run => match fs::metadata(&dir) {
+            Ok(metadata) => DoctorCheck {
+                name: "data_dir".to_string(),
+                ok: metadata.is_dir() && !metadata.permissions().readonly(),
+                message: if metadata.is_dir() && !metadata.permissions().readonly() {
+                    format!(
+                        "data directory exists and appears writable: {}",
+                        dir.display()
+                    )
+                } else {
+                    format!("data directory is not writable: {}", dir.display())
+                },
+            },
+            Err(error) => DoctorCheck {
+                name: "data_dir".to_string(),
+                ok: false,
+                message: format!("data directory is not accessible: {error}"),
+            },
+        },
+        Ok(dir) => match fs::create_dir_all(&dir) {
+            Ok(()) => DoctorCheck {
+                name: "data_dir".to_string(),
+                ok: true,
+                message: format!("data directory is writable: {}", dir.display()),
+            },
+            Err(error) => DoctorCheck {
+                name: "data_dir".to_string(),
+                ok: false,
+                message: format!("data directory is not writable: {error}"),
+            },
+        },
+        Err(error) => DoctorCheck {
+            name: "data_dir".to_string(),
+            ok: false,
+            message: error.to_string(),
+        },
     }
 }
 

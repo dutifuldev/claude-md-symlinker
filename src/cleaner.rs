@@ -77,26 +77,15 @@ fn clean_adapter(
         target_state,
         TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other
     );
-    let stored_hardlink_matches = if matches!(target_state, TargetState::UnknownRegularFile) {
-        stored_hardlink_matches(repo, adapter, state)?
-    } else {
-        false
-    };
     let stored_missing_kind = if matches!(target_state, TargetState::Missing) {
         stored_kind
     } else {
         None
     };
     let stale_missing_managed_target = stored_missing_kind.is_some() && !shared_exclude;
-    let target_can_be_removed =
-        target_managed_kind(&target_state).is_some() || stored_hardlink_matches;
-    let managed_kind = target_managed_kind(&target_state)
-        .or_else(|| stored_hardlink_matches.then_some(MaterializationKind::Hardlink))
-        .or(stored_missing_kind);
+    let target_can_be_removed = target_managed_kind(&target_state).is_some();
+    let managed_kind = target_managed_kind(&target_state).or(stored_missing_kind);
     let managed = managed_kind.is_some();
-    let stale_hardlink_waiting_for_apply = source_exists
-        && matches!(target_state, TargetState::UnknownRegularFile)
-        && stored_hardlink_matches;
 
     if !source_exists && unmanaged_target_exists && managed_kind.is_none() {
         let exclude_updated =
@@ -126,7 +115,7 @@ fn clean_adapter(
 
     if source_exists || !managed {
         let result = result_for(repo, adapter, Status::Kept, "nothing to clean");
-        if !options.dry_run && !stale_hardlink_waiting_for_apply {
+        if !options.dry_run {
             record(
                 state,
                 repo,
@@ -235,12 +224,7 @@ fn record(
     status: Status,
     message: &str,
 ) -> Result<()> {
-    let content_hash = match materialization {
-        Some(MaterializationKind::Hardlink) if !repo.root.join(&adapter.source).exists() => {
-            materializer::target_hash(repo, adapter)?
-        }
-        _ => materializer::source_hash(repo, adapter)?,
-    };
+    let content_hash = materializer::source_hash(repo, adapter)?;
 
     state.record(ShimRecord {
         repo,
@@ -261,19 +245,6 @@ fn target_managed_kind(target_state: &TargetState) -> Option<MaterializationKind
         TargetState::ManagedHardlink => Some(MaterializationKind::Hardlink),
         _ => None,
     }
-}
-
-fn stored_hardlink_matches(repo: &GitRepo, adapter: &Adapter, state: &State) -> Result<bool> {
-    let Some(stored) = state.get_shim(repo, &adapter.name, &adapter.target.to_string_lossy())?
-    else {
-        return Ok(false);
-    };
-
-    if stored.materialization.as_deref() != Some("hardlink") {
-        return Ok(false);
-    }
-
-    Ok(materializer::target_hash(repo, adapter)? == stored.content_hash)
 }
 
 fn stored_managed_kind(

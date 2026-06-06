@@ -120,7 +120,12 @@ impl AppConfig {
             configured_roots.clone()
         } else {
             let requested_roots = canonicalize_existing_paths(cli_roots)?;
-            if config_existed && !configured_roots.is_empty() {
+            if config_existed {
+                if configured_roots.is_empty() {
+                    bail!(
+                        "requested roots cannot be used because no scan roots are configured; run `claudectomy init <root...>` first"
+                    );
+                }
                 for root in &requested_roots {
                     if !configured_roots
                         .iter()
