@@ -28,7 +28,7 @@ pub fn discover_repo(path: &Path) -> Result<Option<GitRepo>> {
         return Ok(None);
     };
 
-    let root = PathBuf::from(root_text.trim())
+    let root = PathBuf::from(root_text)
         .canonicalize()
         .with_context(|| format!("failed to canonicalize Git root from {}", path.display()))?;
 
@@ -77,13 +77,13 @@ pub fn is_tracked(repo: &GitRepo, rel_path: &Path) -> Result<bool> {
 
 pub fn ensure_global_excludes_file(path: &Path, dry_run: bool) -> Result<bool> {
     if let Some(existing) = global_config_value("core.excludesFile")? {
-        if Path::new(existing.trim()) == path {
+        if Path::new(&existing) == path {
             return Ok(false);
         }
 
         bail!(
             "global core.excludesFile is already set to {}; refusing to overwrite it",
-            existing.trim()
+            existing
         );
     }
 
@@ -122,14 +122,14 @@ fn global_config_value(key: &str) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-    ))
+    Ok(Some(strip_trailing_line_ending(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )))
 }
 
 fn git_path(repo: &Path, args: &[&str]) -> Result<PathBuf> {
     let output = git_stdout(repo, args)?.context("git command did not return a path")?;
-    let path = PathBuf::from(output.trim());
+    let path = PathBuf::from(output);
     let absolute = if path.is_absolute() {
         path
     } else {
@@ -150,7 +150,17 @@ fn git_stdout(path: &Path, args: &[&str]) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-    ))
+    Ok(Some(strip_trailing_line_ending(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )))
+}
+
+fn strip_trailing_line_ending(mut text: String) -> String {
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    text
 }

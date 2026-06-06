@@ -175,6 +175,26 @@ fn discovery_does_not_obey_ignore_files_inside_scan_roots() {
     assert!(repo.join("CLAUDE.md").exists());
 }
 
+#[test]
+fn discovery_preserves_significant_whitespace_in_git_paths() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo ");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.repos_scanned, 1);
+    assert_eq!(report.summary.created, 1);
+    assert!(repo.join("CLAUDE.md").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn absolute_symlink_to_agents_md_is_repaired_to_relative_symlink() {
@@ -1610,6 +1630,53 @@ fn source_missing_keeps_existing_managed_target_ignored() {
     assert_eq!(report.summary.exclude_updates, 1);
     assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
     assert!(git_status(&repo, "CLAUDE.md").is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn source_missing_cleanup_preserves_exclude_when_target_cannot_be_inspected() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    fs::create_dir(repo.join("blocked")).unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from("blocked/CLAUDE.md");
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let original_permissions = fs::metadata(repo.join("blocked")).unwrap().permissions();
+    fs::set_permissions(repo.join("blocked"), fs::Permissions::from_mode(0o000)).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    );
+
+    fs::set_permissions(repo.join("blocked"), original_permissions).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.errors, 1);
+    assert_eq!(report.summary.cleaned, 0);
+    assert!(fs::symlink_metadata(repo.join("blocked/CLAUDE.md")).is_ok());
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap();
+    assert!(
+        exclude_text
+            .lines()
+            .any(|line| line == "/blocked/CLAUDE.md")
+    );
 }
 
 #[test]

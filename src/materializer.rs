@@ -59,8 +59,13 @@ pub fn classify(repo: &GitRepo, adapter: &Adapter) -> Result<TargetState> {
     let source = repo.root.join(&adapter.source);
     let target = repo.root.join(&adapter.target);
 
-    let Ok(metadata) = fs::symlink_metadata(&target) else {
-        return Ok(TargetState::Missing);
+    let metadata = match fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(TargetState::Missing),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect target {}", target.display()));
+        }
     };
 
     if target_parent_contains_symlink(repo, &target)? {
