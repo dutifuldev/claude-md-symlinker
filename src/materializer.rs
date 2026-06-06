@@ -132,14 +132,40 @@ pub fn remove_target(repo: &GitRepo, adapter: &Adapter, dry_run: bool) -> Result
     Ok(true)
 }
 
+pub fn recreate_hardlink(
+    repo: &GitRepo,
+    adapter: &Adapter,
+    dry_run: bool,
+) -> Result<MaterializeOutcome> {
+    let target = repo.root.join(&adapter.target);
+    if !dry_run {
+        if fs::symlink_metadata(&target).is_ok() {
+            fs::remove_file(&target)
+                .with_context(|| format!("failed to remove {}", target.display()))?;
+        }
+        create_hardlink(repo, adapter)?;
+    }
+
+    Ok(MaterializeOutcome {
+        kind: MaterializationKind::Hardlink,
+        changed: true,
+    })
+}
+
 pub fn source_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> {
-    let source = repo.root.join(&adapter.source);
-    if !source.exists() {
+    file_hash(&repo.root.join(&adapter.source))
+}
+
+pub fn target_hash(repo: &GitRepo, adapter: &Adapter) -> Result<Option<String>> {
+    file_hash(&repo.root.join(&adapter.target))
+}
+
+fn file_hash(path: &Path) -> Result<Option<String>> {
+    if !path.exists() {
         return Ok(None);
     }
 
-    let bytes =
-        fs::read(&source).with_context(|| format!("failed to read source {}", source.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(Some(format!("{:x}", hasher.finalize())))

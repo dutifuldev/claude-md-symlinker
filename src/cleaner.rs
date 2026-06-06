@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{
     adapters::{self, Adapter},
-    config::AppConfig,
+    config::{AppConfig, ExcludeMode},
     discovery,
     git::GitRepo,
     materializer::{self, TargetState},
@@ -32,9 +32,17 @@ pub fn clean(
 
     for repo in repos {
         for adapter in &adapters {
-            let result = clean_adapter(&repo, adapter, state, options).unwrap_or_else(|error| {
-                result_for(&repo, adapter, Status::Error, error.to_string())
-            });
+            let (result, exclude_updated) =
+                clean_adapter(&repo, adapter, state, config.git.exclude_mode, options)
+                    .unwrap_or_else(|error| {
+                        (
+                            result_for(&repo, adapter, Status::Error, error.to_string()),
+                            false,
+                        )
+                    });
+            if exclude_updated {
+                report.summary.exclude_updates += 1;
+            }
             report.push(result);
         }
     }
@@ -46,8 +54,9 @@ fn clean_adapter(
     repo: &GitRepo,
     adapter: &Adapter,
     state: &State,
+    exclude_mode: ExcludeMode,
     options: CleanOptions,
-) -> Result<RepoResult> {
+) -> Result<(RepoResult, bool)> {
     let source_exists = repo.root.join(&adapter.source).exists();
     let target_state = materializer::classify(repo, adapter)?;
     let managed = matches!(
@@ -62,7 +71,7 @@ fn clean_adapter(
         if !options.dry_run {
             record(state, repo, adapter, Status::Kept, &result.message)?;
         }
-        return Ok(result);
+        return Ok((result, false));
     }
 
     if !options.remove_if_source_missing {
@@ -75,19 +84,32 @@ fn clean_adapter(
         if !options.dry_run {
             record(state, repo, adapter, Status::NoSource, &result.message)?;
         }
-        return Ok(result);
+        return Ok((result, false));
     }
 
     let removed = materializer::remove_target(repo, adapter, options.dry_run)?;
+    let exclude_updated = if removed {
+        crate::exclude::remove(repo, &adapter.target, exclude_mode, options.dry_run)?
+    } else {
+        false
+    };
     let result = if removed {
-        result_for(repo, adapter, Status::Cleaned, "removed stale managed shim")
+        let mut message = if options.dry_run {
+            "would remove stale managed shim".to_string()
+        } else {
+            "removed stale managed shim".to_string()
+        };
+        if exclude_updated {
+            message.push_str("; Git exclude updated");
+        }
+        result_for(repo, adapter, Status::Cleaned, message)
     } else {
         result_for(repo, adapter, Status::Kept, "nothing to clean")
     };
     if !options.dry_run {
         record(state, repo, adapter, result.status, &result.message)?;
     }
-    Ok(result)
+    Ok((result, exclude_updated))
 }
 
 fn record(

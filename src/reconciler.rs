@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     adapters::{self, Adapter},
-    config::AppConfig,
+    config::{AppConfig, SourceMissingBehavior},
     discovery, exclude, git,
     git::GitRepo,
     materializer::{self, MaterializationKind, TargetState},
@@ -73,6 +73,54 @@ fn reconcile_adapter(
     let target = repo.root.join(&adapter.target);
 
     if !source.exists() {
+        if adapter.on_source_missing == SourceMissingBehavior::RemoveIfManaged {
+            if git::is_tracked(repo, &adapter.target)
+                .with_context(|| format!("failed to check tracked target {}", target.display()))?
+            {
+                let result = result_for(
+                    repo,
+                    adapter,
+                    Status::TrackedConflict,
+                    "target is tracked by Git; leaving it untouched and not excluding it",
+                );
+                if !options.dry_run {
+                    record(
+                        state,
+                        repo,
+                        adapter,
+                        None,
+                        Status::TrackedConflict,
+                        &result.message,
+                    )?;
+                }
+                return Ok((result, false));
+            }
+
+            let target_state = materializer::classify(repo, adapter)?;
+            if target_is_managed(&target_state) {
+                materializer::remove_target(repo, adapter, options.dry_run)?;
+                let exclude_updated = exclude::remove(
+                    repo,
+                    &adapter.target,
+                    config.git.exclude_mode,
+                    options.dry_run,
+                )?;
+                let mut message = if options.dry_run {
+                    "would remove stale managed shim".to_string()
+                } else {
+                    "removed stale managed shim".to_string()
+                };
+                if exclude_updated {
+                    message.push_str("; Git exclude updated");
+                }
+                let result = result_for(repo, adapter, Status::Cleaned, message);
+                if !options.dry_run {
+                    record(state, repo, adapter, None, Status::Cleaned, &result.message)?;
+                }
+                return Ok((result, exclude_updated));
+            }
+        }
+
         let result = result_for(
             repo,
             adapter,
@@ -115,24 +163,16 @@ fn reconcile_adapter(
     }
 
     match materializer::classify(repo, adapter)? {
-        TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other => {
-            let result = result_for(
-                repo,
-                adapter,
-                Status::Conflict,
-                "target exists and is not managed; leaving it visible to Git",
-            );
-            if !options.dry_run {
-                record(
-                    state,
-                    repo,
-                    adapter,
-                    None,
-                    Status::Conflict,
-                    &result.message,
-                )?;
+        TargetState::UnknownRegularFile => {
+            if let Some(recovered) = recover_stale_hardlink(config, repo, adapter, state, options)?
+            {
+                return Ok(recovered);
             }
-            Ok((result, false))
+
+            unmanaged_conflict(config, repo, adapter, state, options)
+        }
+        TargetState::UnknownSymlink | TargetState::Other => {
+            unmanaged_conflict(config, repo, adapter, state, options)
         }
         target_state => {
             let previous_state = target_state.clone();
@@ -170,6 +210,93 @@ fn reconcile_adapter(
             Ok((result, exclude_updated))
         }
     }
+}
+
+fn unmanaged_conflict(
+    config: &AppConfig,
+    repo: &GitRepo,
+    adapter: &Adapter,
+    state: &State,
+    options: ReconcileOptions,
+) -> Result<(RepoResult, bool)> {
+    let exclude_updated = exclude::remove(
+        repo,
+        &adapter.target,
+        config.git.exclude_mode,
+        options.dry_run,
+    )?;
+    let mut message = "target exists and is not managed; leaving it visible to Git".to_string();
+    if exclude_updated {
+        message.push_str("; Git exclude removed");
+    }
+    let result = result_for(repo, adapter, Status::Conflict, message);
+    if !options.dry_run {
+        record(
+            state,
+            repo,
+            adapter,
+            None,
+            Status::Conflict,
+            &result.message,
+        )?;
+    }
+    Ok((result, exclude_updated))
+}
+
+fn recover_stale_hardlink(
+    config: &AppConfig,
+    repo: &GitRepo,
+    adapter: &Adapter,
+    state: &State,
+    options: ReconcileOptions,
+) -> Result<Option<(RepoResult, bool)>> {
+    let Some(stored) = state.get_shim(repo, &adapter.name, &adapter.target.to_string_lossy())?
+    else {
+        return Ok(None);
+    };
+
+    if stored.materialization.as_deref() != Some("hardlink") {
+        return Ok(None);
+    }
+
+    if materializer::target_hash(repo, adapter)? != stored.content_hash {
+        return Ok(None);
+    }
+
+    let outcome = materializer::recreate_hardlink(repo, adapter, options.dry_run)?;
+    let exclude_updated = exclude::ensure(
+        repo,
+        &adapter.target,
+        config.git.exclude_mode,
+        options.dry_run,
+    )?;
+    let mut message = message_for(Status::Repaired, outcome.kind, options.dry_run);
+    if exclude_updated {
+        message.push_str("; Git exclude updated");
+    }
+
+    let result = result_for(repo, adapter, Status::Repaired, message);
+    if !options.dry_run {
+        record(
+            state,
+            repo,
+            adapter,
+            Some(outcome.kind),
+            result.status,
+            &result.message,
+        )?;
+    }
+
+    Ok(Some((result, exclude_updated)))
+}
+
+fn target_is_managed(target_state: &TargetState) -> bool {
+    matches!(
+        target_state,
+        TargetState::ManagedSymlink { .. }
+            | TargetState::ManagedCopy { .. }
+            | TargetState::ManagedHardlink
+    )
 }
 
 fn status_for(previous_state: TargetState, changed: bool) -> Status {

@@ -6,7 +6,7 @@ use std::{
 
 use claudectomy::{
     cleaner::{self, CleanOptions},
-    config::{AppConfig, MaterializationStrategy},
+    config::{AppConfig, MaterializationStrategy, SourceMissingBehavior},
     reconciler::{self, ReconcileOptions},
     state::State,
 };
@@ -207,6 +207,39 @@ fn existing_unknown_claude_md_is_not_changed_or_ignored() {
 }
 
 #[test]
+fn replacing_managed_shim_with_user_file_removes_old_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "user-owned replacement\n").unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.conflicts, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
 fn tracked_claude_md_is_not_changed_or_ignored() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -290,6 +323,41 @@ fn copy_materialization_refreshes_managed_copy() {
 }
 
 #[test]
+fn hardlink_materialization_recovers_after_source_replacement() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    fs::rename(repo.join("AGENTS.md"), repo.join("old-agents")).unwrap();
+    fs::write(repo.join("AGENTS.md"), "v2\n").unwrap();
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.repaired, 1);
+    assert_eq!(fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "v2\n");
+    assert!(same_file::is_same_file(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap());
+}
+
+#[test]
 fn clean_removes_only_stale_managed_shims_when_requested() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -332,7 +400,46 @@ fn clean_removes_only_stale_managed_shims_when_requested() {
     )
     .unwrap();
     assert_eq!(cleaned.summary.cleaned, 1);
+    assert_eq!(cleaned.summary.exclude_updates, 1);
     assert!(!repo.join("CLAUDE.md").exists());
+
+    fs::write(repo.join("CLAUDE.md"), "new user claude\n").unwrap();
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
+fn apply_remove_if_managed_removes_stale_shim_and_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.cleaned, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+    assert!(!repo.join("CLAUDE.md").exists());
+    fs::write(repo.join("CLAUDE.md"), "new user claude\n").unwrap();
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
 }
 
 #[test]

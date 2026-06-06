@@ -20,6 +20,12 @@ pub struct ShimRecord<'a> {
     pub message: &'a str,
 }
 
+#[derive(Debug, Clone)]
+pub struct StoredShim {
+    pub materialization: Option<String>,
+    pub content_hash: Option<String>,
+}
+
 impl State {
     pub fn open_default() -> Result<Self> {
         Self::open(config::data_dir()?)
@@ -122,6 +128,43 @@ impl State {
         )?;
 
         Ok(())
+    }
+
+    pub fn get_shim(
+        &self,
+        repo: &GitRepo,
+        adapter_name: &str,
+        target_rel_path: &str,
+    ) -> Result<Option<StoredShim>> {
+        let Some(conn) = &self.conn else {
+            return Ok(None);
+        };
+
+        let mut statement = conn.prepare(
+            r#"
+            SELECT s.materialization, s.content_hash
+            FROM shims s
+            JOIN repositories r ON r.id = s.repository_id
+            WHERE r.root_path = ?1
+              AND s.adapter_name = ?2
+              AND s.target_rel_path = ?3
+            "#,
+        )?;
+
+        let mut rows = statement.query(params![
+            repo.root.to_string_lossy(),
+            adapter_name,
+            target_rel_path,
+        ])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(StoredShim {
+                materialization: row.get(0)?,
+                content_hash: row.get(1)?,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     fn migrate(&self) -> Result<()> {
