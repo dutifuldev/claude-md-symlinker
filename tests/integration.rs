@@ -350,6 +350,77 @@ fn tracked_managed_shim_removes_old_exclude() {
 }
 
 #[test]
+fn source_missing_tracked_managed_shim_removes_old_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    git(&repo, &["add", "-f", "CLAUDE.md"]);
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.tracked_conflicts, 1);
+    assert_eq!(report.summary.no_source, 0);
+    assert_eq!(report.summary.exclude_updates, 1);
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[test]
+fn source_missing_tracked_managed_shim_does_not_recreate_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::write(git_exclude_path(&repo), "").unwrap();
+    git(&repo, &["add", "-f", "CLAUDE.md"]);
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.tracked_conflicts, 1);
+    assert_eq!(report.summary.no_source, 0);
+    assert_eq!(report.summary.exclude_updates, 0);
+    let exclude_text = fs::read_to_string(git_exclude_path(&repo)).unwrap_or_default();
+    assert!(!exclude_text.lines().any(|line| line == "/CLAUDE.md"));
+}
+
+#[test]
 fn tracked_deleted_claude_md_is_not_recreated() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");

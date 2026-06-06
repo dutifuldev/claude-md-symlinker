@@ -91,98 +91,98 @@ fn reconcile_adapter(
         let target_can_be_removed = target_managed_kind(&target_state).is_some();
         let managed_kind = target_managed_kind(&target_state).or(stored_missing_kind);
 
-        if adapter.on_source_missing == SourceMissingBehavior::RemoveIfManaged {
-            if git::is_tracked(repo, &adapter.target)
-                .with_context(|| format!("failed to check tracked target {}", target.display()))?
-            {
-                let exclude_updated = exclude::remove(
+        if git::is_tracked(repo, &adapter.target)
+            .with_context(|| format!("failed to check tracked target {}", target.display()))?
+        {
+            let exclude_updated = exclude::remove(
+                repo,
+                &adapter.target,
+                config.git.exclude_mode,
+                options.dry_run,
+            )?;
+            let result = result_for(
+                repo,
+                adapter,
+                Status::TrackedConflict,
+                tracked_conflict_message(exclude_updated, options.dry_run),
+            );
+            if !options.dry_run {
+                record(
+                    state,
+                    repo,
+                    adapter,
+                    None,
+                    Status::TrackedConflict,
+                    &result.message,
+                )?;
+            }
+            return Ok((result, exclude_updated));
+        }
+
+        if adapter.on_source_missing == SourceMissingBehavior::RemoveIfManaged
+            && (target_can_be_removed || stale_missing_managed_target)
+        {
+            if target_can_be_removed {
+                exclude::remove(repo, &adapter.target, config.git.exclude_mode, true)?;
+            }
+            let removed = if target_can_be_removed {
+                materializer::remove_target(repo, adapter, options.dry_run)?
+            } else {
+                false
+            };
+            let should_remove_exclude = stale_missing_managed_target
+                || removed
+                || (target_can_be_removed && options.dry_run);
+            let exclude_updated = if should_remove_exclude {
+                exclude::remove(
                     repo,
                     &adapter.target,
                     config.git.exclude_mode,
                     options.dry_run,
-                )?;
-                let result = result_for(
+                )?
+            } else {
+                false
+            };
+            let mut message = if removed {
+                if options.dry_run {
+                    "would remove stale managed shim".to_string()
+                } else {
+                    "removed stale managed shim".to_string()
+                }
+            } else if exclude_updated {
+                if options.dry_run {
+                    "would remove stale managed shim exclude".to_string()
+                } else {
+                    "removed stale managed shim exclude".to_string()
+                }
+            } else {
+                "stale managed shim already absent".to_string()
+            };
+            if exclude_updated {
+                message.push_str("; Git exclude updated");
+            }
+            let status = if removed || exclude_updated {
+                Status::Cleaned
+            } else {
+                Status::Kept
+            };
+            let result = result_for(repo, adapter, status, message);
+            if !options.dry_run {
+                let materialization = if result.status == Status::Kept {
+                    managed_kind
+                } else {
+                    None
+                };
+                record(
+                    state,
                     repo,
                     adapter,
-                    Status::TrackedConflict,
-                    tracked_conflict_message(exclude_updated, options.dry_run),
-                );
-                if !options.dry_run {
-                    record(
-                        state,
-                        repo,
-                        adapter,
-                        None,
-                        Status::TrackedConflict,
-                        &result.message,
-                    )?;
-                }
-                return Ok((result, exclude_updated));
+                    materialization,
+                    result.status,
+                    &result.message,
+                )?;
             }
-
-            if target_can_be_removed || stale_missing_managed_target {
-                if target_can_be_removed {
-                    exclude::remove(repo, &adapter.target, config.git.exclude_mode, true)?;
-                }
-                let removed = if target_can_be_removed {
-                    materializer::remove_target(repo, adapter, options.dry_run)?
-                } else {
-                    false
-                };
-                let should_remove_exclude = stale_missing_managed_target
-                    || removed
-                    || (target_can_be_removed && options.dry_run);
-                let exclude_updated = if should_remove_exclude {
-                    exclude::remove(
-                        repo,
-                        &adapter.target,
-                        config.git.exclude_mode,
-                        options.dry_run,
-                    )?
-                } else {
-                    false
-                };
-                let mut message = if removed {
-                    if options.dry_run {
-                        "would remove stale managed shim".to_string()
-                    } else {
-                        "removed stale managed shim".to_string()
-                    }
-                } else if exclude_updated {
-                    if options.dry_run {
-                        "would remove stale managed shim exclude".to_string()
-                    } else {
-                        "removed stale managed shim exclude".to_string()
-                    }
-                } else {
-                    "stale managed shim already absent".to_string()
-                };
-                if exclude_updated {
-                    message.push_str("; Git exclude updated");
-                }
-                let status = if removed || exclude_updated {
-                    Status::Cleaned
-                } else {
-                    Status::Kept
-                };
-                let result = result_for(repo, adapter, status, message);
-                if !options.dry_run {
-                    let materialization = if result.status == Status::Kept {
-                        managed_kind
-                    } else {
-                        None
-                    };
-                    record(
-                        state,
-                        repo,
-                        adapter,
-                        materialization,
-                        result.status,
-                        &result.message,
-                    )?;
-                }
-                return Ok((result, exclude_updated));
-            }
+            return Ok((result, exclude_updated));
         }
 
         let unmanaged_target_exists = matches!(
