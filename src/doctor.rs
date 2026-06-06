@@ -95,21 +95,27 @@ impl DoctorReport {
             });
         }
 
-        let adapters = adapters::enabled_adapters(&loaded.config);
-        checks.push(DoctorCheck {
-            name: "adapters".to_string(),
-            ok: !adapters.is_empty(),
-            message: if adapters.is_empty() {
-                "no adapters are enabled".to_string()
-            } else {
-                format!(
-                    "enabled adapters: {}",
-                    adapters
-                        .iter()
-                        .map(|a| a.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+        checks.push(match adapters::enabled_adapters(&loaded.config) {
+            Ok(adapters) => DoctorCheck {
+                name: "adapters".to_string(),
+                ok: !adapters.is_empty(),
+                message: if adapters.is_empty() {
+                    "no adapters are enabled".to_string()
+                } else {
+                    format!(
+                        "enabled adapters: {}",
+                        adapters
+                            .iter()
+                            .map(|a| a.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            },
+            Err(error) => DoctorCheck {
+                name: "adapters".to_string(),
+                ok: false,
+                message: error.to_string(),
             },
         });
 

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -26,18 +26,25 @@ pub fn apply(
 ) -> Result<Report> {
     let scope = config.scan_scope(config_existed, cli_roots)?;
     let repos = discovery::discover(&scope)?;
-    let adapters = adapters::enabled_adapters(config);
+    let adapters = adapters::enabled_adapters(config)?;
+    let exclude_counts = exclude_path_counts(&repos);
     let mut report = Report::new(repos.len());
 
     for repo in repos {
+        let shared_exclude = exclude_counts
+            .get(&repo.exclude_path)
+            .copied()
+            .unwrap_or_default()
+            > 1;
         for adapter in &adapters {
             let (result, exclude_updated) =
-                reconcile_adapter(config, &repo, adapter, state, options).unwrap_or_else(|error| {
-                    (
-                        result_for(&repo, adapter, Status::Error, error.to_string()),
-                        false,
-                    )
-                });
+                reconcile_adapter(config, &repo, adapter, state, options, shared_exclude)
+                    .unwrap_or_else(|error| {
+                        (
+                            result_for(&repo, adapter, Status::Error, error.to_string()),
+                            false,
+                        )
+                    });
 
             if result.status == Status::Error && !options.dry_run {
                 let _ = state.record(ShimRecord {
@@ -68,6 +75,7 @@ fn reconcile_adapter(
     adapter: &Adapter,
     state: &State,
     options: ReconcileOptions,
+    shared_exclude: bool,
 ) -> Result<(RepoResult, bool)> {
     let source = repo.root.join(&adapter.source);
     let target = repo.root.join(&adapter.target);
@@ -76,6 +84,9 @@ fn reconcile_adapter(
         let target_state = materializer::classify(repo, adapter)?;
         let managed_target =
             target_is_managed(&target_state) || stored_hardlink_matches(repo, adapter, state)?;
+        let stale_missing_managed_target = matches!(target_state, TargetState::Missing)
+            && stored_managed_shim_exists(repo, adapter, state)?
+            && !shared_exclude;
 
         if adapter.on_source_missing == SourceMissingBehavior::RemoveIfManaged {
             if git::is_tracked(repo, &adapter.target)
@@ -100,25 +111,44 @@ fn reconcile_adapter(
                 return Ok((result, false));
             }
 
-            if managed_target {
-                materializer::remove_target(repo, adapter, options.dry_run)?;
+            if managed_target || stale_missing_managed_target {
+                let removed = if managed_target {
+                    materializer::remove_target(repo, adapter, options.dry_run)?
+                } else {
+                    false
+                };
                 let exclude_updated = exclude::remove(
                     repo,
                     &adapter.target,
                     config.git.exclude_mode,
                     options.dry_run,
                 )?;
-                let mut message = if options.dry_run {
-                    "would remove stale managed shim".to_string()
+                let mut message = if removed {
+                    if options.dry_run {
+                        "would remove stale managed shim".to_string()
+                    } else {
+                        "removed stale managed shim".to_string()
+                    }
+                } else if exclude_updated {
+                    if options.dry_run {
+                        "would remove stale managed shim exclude".to_string()
+                    } else {
+                        "removed stale managed shim exclude".to_string()
+                    }
                 } else {
-                    "removed stale managed shim".to_string()
+                    "stale managed shim already absent".to_string()
                 };
                 if exclude_updated {
                     message.push_str("; Git exclude updated");
                 }
-                let result = result_for(repo, adapter, Status::Cleaned, message);
+                let status = if removed || exclude_updated {
+                    Status::Cleaned
+                } else {
+                    Status::Kept
+                };
+                let result = result_for(repo, adapter, status, message);
                 if !options.dry_run {
-                    record(state, repo, adapter, None, Status::Cleaned, &result.message)?;
+                    record(state, repo, adapter, None, result.status, &result.message)?;
                 }
                 return Ok((result, exclude_updated));
             }
@@ -128,7 +158,8 @@ fn reconcile_adapter(
             target_state,
             TargetState::UnknownRegularFile | TargetState::UnknownSymlink | TargetState::Other
         );
-        let exclude_updated = if managed_target || !unmanaged_target_exists {
+        let should_remove_exclude = unmanaged_target_exists || stale_missing_managed_target;
+        let exclude_updated = if managed_target || !should_remove_exclude {
             false
         } else {
             exclude::remove(
@@ -343,6 +374,21 @@ fn stored_hardlink_matches(repo: &GitRepo, adapter: &Adapter, state: &State) -> 
     }
 
     Ok(materializer::target_hash(repo, adapter)? == stored.content_hash)
+}
+
+fn stored_managed_shim_exists(repo: &GitRepo, adapter: &Adapter, state: &State) -> Result<bool> {
+    Ok(state
+        .get_shim(repo, &adapter.name, &adapter.target.to_string_lossy())?
+        .and_then(|stored| stored.materialization)
+        .is_some())
+}
+
+fn exclude_path_counts(repos: &[GitRepo]) -> BTreeMap<PathBuf, usize> {
+    let mut counts = BTreeMap::new();
+    for repo in repos {
+        *counts.entry(repo.exclude_path.clone()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn target_is_managed(target_state: &TargetState) -> bool {

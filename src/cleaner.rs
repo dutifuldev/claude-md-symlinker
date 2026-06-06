@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
 
@@ -6,7 +6,7 @@ use crate::{
     adapters::{self, Adapter},
     config::{AppConfig, ExcludeMode},
     discovery,
-    git::GitRepo,
+    git::{self, GitRepo},
     materializer::{self, TargetState},
     reporting::{RepoResult, Report, Status},
     state::{ShimRecord, State},
@@ -27,19 +27,31 @@ pub fn clean(
 ) -> Result<Report> {
     let scope = config.scan_scope(config_existed, cli_roots)?;
     let repos = discovery::discover(&scope)?;
-    let adapters = adapters::enabled_adapters(config);
+    let adapters = adapters::enabled_adapters(config)?;
+    let exclude_counts = exclude_path_counts(&repos);
     let mut report = Report::new(repos.len());
 
     for repo in repos {
+        let shared_exclude = exclude_counts
+            .get(&repo.exclude_path)
+            .copied()
+            .unwrap_or_default()
+            > 1;
         for adapter in &adapters {
-            let (result, exclude_updated) =
-                clean_adapter(&repo, adapter, state, config.git.exclude_mode, options)
-                    .unwrap_or_else(|error| {
-                        (
-                            result_for(&repo, adapter, Status::Error, error.to_string()),
-                            false,
-                        )
-                    });
+            let (result, exclude_updated) = clean_adapter(
+                &repo,
+                adapter,
+                state,
+                config.git.exclude_mode,
+                options,
+                shared_exclude,
+            )
+            .unwrap_or_else(|error| {
+                (
+                    result_for(&repo, adapter, Status::Error, error.to_string()),
+                    false,
+                )
+            });
             if exclude_updated {
                 report.summary.exclude_updates += 1;
             }
@@ -56,11 +68,16 @@ fn clean_adapter(
     state: &State,
     exclude_mode: ExcludeMode,
     options: CleanOptions,
+    shared_exclude: bool,
 ) -> Result<(RepoResult, bool)> {
     let source_exists = repo.root.join(&adapter.source).exists();
     let target_state = materializer::classify(repo, adapter)?;
-    let managed =
-        target_is_managed(&target_state) || stored_hardlink_matches(repo, adapter, state)?;
+    let stale_missing_managed_target = matches!(target_state, TargetState::Missing)
+        && stored_managed_shim_exists(repo, adapter, state)?
+        && !shared_exclude;
+    let managed = target_is_managed(&target_state)
+        || stored_hardlink_matches(repo, adapter, state)?
+        || stale_missing_managed_target;
 
     if source_exists || !managed {
         let result = result_for(repo, adapter, Status::Kept, "nothing to clean");
@@ -83,17 +100,42 @@ fn clean_adapter(
         return Ok((result, false));
     }
 
+    if git::is_tracked(repo, &adapter.target)? {
+        let result = result_for(
+            repo,
+            adapter,
+            Status::TrackedConflict,
+            "target is tracked by Git; leaving it untouched and not excluding it",
+        );
+        if !options.dry_run {
+            record(
+                state,
+                repo,
+                adapter,
+                Status::TrackedConflict,
+                &result.message,
+            )?;
+        }
+        return Ok((result, false));
+    }
+
     let removed = materializer::remove_target(repo, adapter, options.dry_run)?;
-    let exclude_updated = if removed {
+    let exclude_updated = if removed || stale_missing_managed_target {
         crate::exclude::remove(repo, &adapter.target, exclude_mode, options.dry_run)?
     } else {
         false
     };
-    let result = if removed {
-        let mut message = if options.dry_run {
-            "would remove stale managed shim".to_string()
+    let result = if removed || exclude_updated {
+        let mut message = if removed {
+            if options.dry_run {
+                "would remove stale managed shim".to_string()
+            } else {
+                "removed stale managed shim".to_string()
+            }
+        } else if options.dry_run {
+            "would remove stale managed shim exclude".to_string()
         } else {
-            "removed stale managed shim".to_string()
+            "removed stale managed shim exclude".to_string()
         };
         if exclude_updated {
             message.push_str("; Git exclude updated");
@@ -147,6 +189,21 @@ fn stored_hardlink_matches(repo: &GitRepo, adapter: &Adapter, state: &State) -> 
     }
 
     Ok(materializer::target_hash(repo, adapter)? == stored.content_hash)
+}
+
+fn stored_managed_shim_exists(repo: &GitRepo, adapter: &Adapter, state: &State) -> Result<bool> {
+    Ok(state
+        .get_shim(repo, &adapter.name, &adapter.target.to_string_lossy())?
+        .and_then(|stored| stored.materialization)
+        .is_some())
+}
+
+fn exclude_path_counts(repos: &[GitRepo]) -> BTreeMap<PathBuf, usize> {
+    let mut counts = BTreeMap::new();
+    for repo in repos {
+        *counts.entry(repo.exclude_path.clone()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn result_for(

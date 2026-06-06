@@ -269,6 +269,27 @@ fn tracked_claude_md_is_not_changed_or_ignored() {
 }
 
 #[test]
+fn adapter_target_path_cannot_escape_repo_root() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from("../OUTSIDE.md");
+
+    let error = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("must stay inside"));
+    assert!(!fixture.root.path().join("OUTSIDE.md").exists());
+}
+
+#[test]
 fn dry_run_reports_without_mutating_repo_or_state() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -477,6 +498,41 @@ fn source_missing_with_user_file_removes_stale_exclude_even_when_leaving_managed
 }
 
 #[test]
+fn source_missing_after_deleted_managed_target_removes_stale_exclude() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+
+    fs::write(repo.join("CLAUDE.md"), "new user claude\n").unwrap();
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
 fn remove_if_managed_cleans_stale_hardlink_after_source_deletion() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -546,6 +602,80 @@ fn clean_removes_stale_hardlink_after_source_deletion() {
     assert_eq!(report.summary.cleaned, 1);
     assert_eq!(report.summary.exclude_updates, 1);
     assert!(!repo.join("CLAUDE.md").exists());
+}
+
+#[test]
+fn clean_removes_stale_exclude_when_managed_target_was_already_deleted() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.cleaned, 1);
+    assert_eq!(report.summary.exclude_updates, 1);
+
+    fs::write(repo.join("CLAUDE.md"), "new user claude\n").unwrap();
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "?? CLAUDE.md\n");
+}
+
+#[test]
+fn clean_does_not_remove_tracked_managed_target() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let config = fixture.config();
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    git(&repo, &["add", "-f", "CLAUDE.md"]);
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.tracked_conflicts, 1);
+    assert!(fs::symlink_metadata(repo.join("CLAUDE.md")).is_ok());
+    assert_eq!(git_status(&repo, "CLAUDE.md"), "A  CLAUDE.md\n");
 }
 
 #[test]
