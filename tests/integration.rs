@@ -315,6 +315,27 @@ fn adapter_target_path_cannot_escape_repo_root() {
 }
 
 #[test]
+fn adapter_source_and_target_must_be_distinct() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let mut config = fixture.config();
+    config.adapters.claude.target = PathBuf::from("AGENTS.md");
+
+    let error = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("must be different"));
+    assert_eq!(git_status(&repo, "AGENTS.md"), "?? AGENTS.md\n");
+}
+
+#[test]
 fn invalid_utf8_exclude_file_is_not_overwritten() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -696,6 +717,43 @@ fn remove_if_managed_cleans_stale_hardlink_after_source_deletion() {
 }
 
 #[test]
+fn stale_hardlink_state_does_not_claim_directory_replacement() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    config.adapters.claude.on_source_missing = SourceMissingBehavior::RemoveIfManaged;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::create_dir(repo.join("CLAUDE.md")).unwrap();
+
+    let report = reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.errors, 0);
+    assert!(repo.join("CLAUDE.md").is_dir());
+}
+
+#[test]
 fn clean_removes_stale_hardlink_after_source_deletion() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -730,6 +788,45 @@ fn clean_removes_stale_hardlink_after_source_deletion() {
     assert_eq!(report.summary.cleaned, 1);
     assert_eq!(report.summary.exclude_updates, 1);
     assert!(!repo.join("CLAUDE.md").exists());
+}
+
+#[test]
+fn clean_does_not_claim_directory_replacement_from_stale_hardlink_state() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "v1\n").unwrap();
+    let mut config = fixture.config();
+    config.materialization.strategy = MaterializationStrategy::Hardlink;
+    config.materialization.allow_hardlink = true;
+    let state = fixture.state();
+
+    reconciler::apply(
+        &config,
+        false,
+        &[],
+        &state,
+        ReconcileOptions { dry_run: false },
+    )
+    .unwrap();
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+    fs::create_dir(repo.join("CLAUDE.md")).unwrap();
+
+    let report = cleaner::clean(
+        &config,
+        false,
+        &[],
+        &state,
+        CleanOptions {
+            dry_run: false,
+            remove_if_source_missing: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.summary.no_source, 1);
+    assert_eq!(report.summary.errors, 0);
+    assert!(repo.join("CLAUDE.md").is_dir());
 }
 
 #[test]
@@ -1057,6 +1154,32 @@ fn linked_worktree_uses_worktree_exclude_file() {
             .contains("/CLAUDE.md")
     );
     assert!(git_status(&worktree, "CLAUDE.md").is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directories_are_skipped_during_discovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical instructions\n").unwrap();
+    let blocked = fixture.root.path().join("blocked");
+    fs::create_dir(&blocked).unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let report = reconciler::apply(
+        &fixture.config(),
+        false,
+        &[],
+        &fixture.state(),
+        ReconcileOptions { dry_run: false },
+    );
+
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.summary.created, 1);
+    assert!(repo.join("CLAUDE.md").exists());
 }
 
 #[test]

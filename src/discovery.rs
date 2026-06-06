@@ -20,7 +20,13 @@ pub fn discover(scope: &ScanScope) -> Result<Vec<GitRepo>> {
         builder.filter_entry(move |entry| should_visit(&exclude_paths, &exclude_dir_names, entry));
 
         for entry in builder.build() {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!("skipping unreadable discovery entry: {error}");
+                    continue;
+                }
+            };
             let path = entry.path();
             if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 continue;

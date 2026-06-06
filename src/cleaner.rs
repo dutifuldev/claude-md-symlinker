@@ -79,7 +79,11 @@ fn clean_adapter(
     let stale_missing_managed_target = matches!(target_state, TargetState::Missing)
         && stored_managed_shim_exists(repo, adapter, state)?
         && !shared_exclude;
-    let stored_hardlink_matches = stored_hardlink_matches(repo, adapter, state)?;
+    let stored_hardlink_matches = if matches!(target_state, TargetState::UnknownRegularFile) {
+        stored_hardlink_matches(repo, adapter, state)?
+    } else {
+        false
+    };
     let managed_kind = target_managed_kind(&target_state)
         .or_else(|| stored_hardlink_matches.then_some(MaterializationKind::Hardlink));
     let managed = managed_kind.is_some() || stale_missing_managed_target;

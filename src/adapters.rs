@@ -20,6 +20,12 @@ impl Adapter {
 
         validate_repo_relative_path(name, "source", &config.source)?;
         validate_repo_relative_path(name, "target", &config.target)?;
+        if config.source == config.target {
+            bail!(
+                "{name} adapter source and target must be different paths: {}",
+                config.source.display()
+            );
+        }
 
         Ok(Some(Self {
             name: name.to_string(),

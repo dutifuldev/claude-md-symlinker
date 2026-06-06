@@ -82,7 +82,11 @@ fn reconcile_adapter(
 
     if !source.exists() {
         let target_state = materializer::classify(repo, adapter)?;
-        let stored_hardlink_matches = stored_hardlink_matches(repo, adapter, state)?;
+        let stored_hardlink_matches = if matches!(target_state, TargetState::UnknownRegularFile) {
+            stored_hardlink_matches(repo, adapter, state)?
+        } else {
+            false
+        };
         let managed_kind = target_managed_kind(&target_state)
             .or_else(|| stored_hardlink_matches.then_some(MaterializationKind::Hardlink));
         let managed_target = managed_kind.is_some();
