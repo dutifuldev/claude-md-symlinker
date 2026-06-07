@@ -305,7 +305,7 @@ Description=CLAUDE.mdeez AGENTS.md compatibility watcher
 Documentation=https://github.com/dutifuldev/claudemdeez
 
 [Service]
-Type=simple
+Type=exec
 ExecStart={exec_args}
 Restart=on-failure
 RestartSec=10s
@@ -578,6 +578,7 @@ mod tests {
                 "Environment=\"CLAUDEMDEEZ_DATA_DIR=/home/user/.local/share/claudemdeez\""
             )
         );
+        assert!(unit.contains("Type=exec"));
         assert!(unit.contains("Restart=on-failure"));
     }
 
