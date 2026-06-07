@@ -81,9 +81,9 @@ fn install(
     ensure_existing_unit_is_managed_or_absent(&spec.unit_path)?;
     ensure_unit_name_is_available(&spec, false)?;
     validate_unit_path_writable(&spec.unit_path)?;
-    let unit = build_unit(&spec);
 
     if dry_run {
+        ensure_service_data_dir_ready(&spec.data_dir, true)?;
         print_report(
             json,
             ServiceReport {
@@ -101,11 +101,13 @@ fn install(
     ensure_existing_unit_is_managed_or_absent(&spec.unit_path)?;
     ensure_unit_name_is_available(&spec, true)?;
     validate_unit_path_writable(&spec.unit_path)?;
+    ensure_service_data_dir_ready(&spec.data_dir, false)?;
 
     if let Some(parent) = spec.unit_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create systemd user dir {}", parent.display()))?;
     }
+    let unit = build_unit(&spec);
     fs::write(&spec.unit_path, unit)
         .with_context(|| format!("failed to write {}", spec.unit_path.display()))?;
 
@@ -768,6 +770,92 @@ fn validate_unit_path_writable(unit_path: &Path) -> Result<()> {
     if metadata.permissions().readonly() || !current_user_can_write_directory(existing_parent)? {
         bail!(
             "systemd user unit parent {} is not writable",
+            existing_parent.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_service_data_dir_ready(data_dir: &Path, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return validate_service_data_dir_writable(data_dir);
+    }
+
+    fs::create_dir_all(data_dir).with_context(|| {
+        format!(
+            "failed to create service data directory {}",
+            data_dir.display()
+        )
+    })?;
+    validate_existing_service_data_dir(data_dir)
+}
+
+fn validate_service_data_dir_writable(data_dir: &Path) -> Result<()> {
+    match fs::metadata(data_dir) {
+        Ok(_) => validate_existing_service_data_dir(data_dir),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_service_data_dir(data_dir)
+        }
+        Err(error) => {
+            bail!(
+                "failed to inspect service data directory {}: {}",
+                data_dir.display(),
+                error
+            );
+        }
+    }
+}
+
+fn validate_existing_service_data_dir(data_dir: &Path) -> Result<()> {
+    let metadata = fs::metadata(data_dir).with_context(|| {
+        format!(
+            "failed to inspect service data directory {}",
+            data_dir.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "service data directory {} is not a directory",
+            data_dir.display()
+        );
+    }
+    if metadata.permissions().readonly() || !current_user_can_write_directory(data_dir)? {
+        bail!(
+            "service data directory {} is not writable",
+            data_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_missing_service_data_dir(data_dir: &Path) -> Result<()> {
+    let parent = data_dir.parent().with_context(|| {
+        format!(
+            "service data directory {} has no parent",
+            data_dir.display()
+        )
+    })?;
+    let existing_parent = nearest_existing_ancestor(parent).with_context(|| {
+        format!(
+            "service data directory parent {} has no existing ancestor",
+            parent.display()
+        )
+    })?;
+    let metadata = fs::metadata(existing_parent).with_context(|| {
+        format!(
+            "failed to inspect service data directory parent {}",
+            existing_parent.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "service data directory parent {} is not a directory",
+            existing_parent.display()
+        );
+    }
+    if metadata.permissions().readonly() || !current_user_can_write_directory(existing_parent)? {
+        bail!(
+            "service data directory parent {} is not writable",
             existing_parent.display()
         );
     }
