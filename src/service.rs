@@ -385,17 +385,19 @@ fn unit_path(unit_name: &str) -> Result<PathBuf> {
 }
 
 fn systemd_user_dir() -> Result<PathBuf> {
-    if let Some(path) = manager_user_config_dir()? {
-        return Ok(path.join("systemd/user"));
+    if let Some(path) = manager_user_unit_dir()? {
+        return Ok(path);
     }
 
     Ok(process_user_config_dir()?.join("systemd/user"))
 }
 
-fn manager_user_config_dir() -> Result<Option<PathBuf>> {
+fn manager_user_unit_dir() -> Result<Option<PathBuf>> {
     let output = match Command::new("systemctl")
         .arg("--user")
-        .arg("show-environment")
+        .arg("show")
+        .arg("--property=UnitPath")
+        .arg("--value")
         .output()
     {
         Ok(output) => output,
@@ -406,90 +408,56 @@ fn manager_user_config_dir() -> Result<Option<PathBuf>> {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut home = None;
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("XDG_CONFIG_HOME=")
-            && let Some(path) = manager_env_path(value)?
-        {
+    for token in systemd_show_list_tokens(&text)? {
+        let path = PathBuf::from(token);
+        if path.is_absolute() && path.ends_with("systemd/user") {
             return Ok(Some(path));
         }
-        if let Some(value) = line.strip_prefix("HOME=") {
-            home = manager_env_path(value)?;
+    }
+
+    Ok(None)
+}
+
+fn systemd_show_list_tokens(value: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    for token in value.split_whitespace() {
+        let decoded = decode_systemd_show_token(token)?;
+        if !decoded.is_empty() {
+            tokens.push(decoded);
         }
     }
-
-    Ok(home.map(|path| path.join(".config")))
+    Ok(tokens)
 }
 
-fn manager_env_path(value: &str) -> Result<Option<PathBuf>> {
-    let decoded = decode_systemctl_env_value(value)?;
-    if decoded.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(absolute_expanded_path(Path::new(&decoded))?))
-}
-
-fn decode_systemctl_env_value(value: &str) -> Result<String> {
-    if let Some(inner) = value
-        .strip_prefix("$'")
-        .and_then(|value| value.strip_suffix('\''))
-    {
-        return decode_ansi_c_quoted(inner);
-    }
-    if let Some(inner) = value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-    {
-        return Ok(decode_double_quoted(inner));
-    }
-    if let Some(inner) = value
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-    {
-        return Ok(inner.to_string());
-    }
-    Ok(value.to_string())
-}
-
-fn decode_double_quoted(value: &str) -> String {
-    let mut decoded = String::new();
-    let mut chars = value.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            if let Some(next) = chars.next() {
-                decoded.push(next);
-            }
-        } else {
-            decoded.push(ch);
-        }
-    }
-    decoded
+fn decode_systemd_show_token(value: &str) -> Result<String> {
+    decode_ansi_c_quoted(value)
 }
 
 fn decode_ansi_c_quoted(value: &str) -> Result<String> {
-    let mut decoded = String::new();
+    let mut decoded = Vec::new();
     let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
-            decoded.push(ch);
+            let mut buffer = [0; 4];
+            decoded.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
             continue;
         }
 
         let Some(escaped) = chars.next() else {
-            decoded.push('\\');
+            decoded.push(b'\\');
             break;
         };
         match escaped {
-            'a' => decoded.push('\x07'),
-            'b' => decoded.push('\x08'),
-            'f' => decoded.push('\x0c'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            'v' => decoded.push('\x0b'),
-            '\\' => decoded.push('\\'),
-            '\'' => decoded.push('\''),
-            '"' => decoded.push('"'),
+            'a' => decoded.push(0x07),
+            'b' => decoded.push(0x08),
+            'f' => decoded.push(0x0c),
+            'n' => decoded.push(b'\n'),
+            'r' => decoded.push(b'\r'),
+            't' => decoded.push(b'\t'),
+            'v' => decoded.push(0x0b),
+            '\\' => decoded.push(b'\\'),
+            '\'' => decoded.push(b'\''),
+            '"' => decoded.push(b'"'),
             'x' => {
                 let mut hex = String::new();
                 for _ in 0..2 {
@@ -498,11 +466,11 @@ fn decode_ansi_c_quoted(value: &str) -> Result<String> {
                     }
                 }
                 if hex.is_empty() {
-                    decoded.push('x');
+                    decoded.push(b'x');
                 } else {
                     let value = u8::from_str_radix(&hex, 16)
-                        .context("failed to decode systemctl environment hex escape")?;
-                    decoded.push(value as char);
+                        .context("failed to decode systemd hex escape")?;
+                    decoded.push(value);
                 }
             }
             '0'..='7' => {
@@ -513,13 +481,16 @@ fn decode_ansi_c_quoted(value: &str) -> Result<String> {
                     }
                 }
                 let value = u8::from_str_radix(&octal, 8)
-                    .context("failed to decode systemctl environment octal escape")?;
-                decoded.push(value as char);
+                    .context("failed to decode systemd octal escape")?;
+                decoded.push(value);
             }
-            other => decoded.push(other),
+            other => {
+                let mut buffer = [0; 4];
+                decoded.extend_from_slice(other.encode_utf8(&mut buffer).as_bytes());
+            }
         }
     }
-    Ok(decoded)
+    String::from_utf8(decoded).context("failed to decode systemd escaped text as UTF-8")
 }
 
 fn process_user_config_dir() -> Result<PathBuf> {
@@ -835,8 +806,8 @@ mod tests {
 
     use super::{
         MANAGED_MARKER, UnitSpec, build_unit, current_user_can_write_directory,
-        decode_systemctl_env_value, ensure_existing_unit_is_managed_or_absent,
-        ensure_service_scan_paths_are_absolute, is_managed_unit, normalize_unit_name,
+        ensure_existing_unit_is_managed_or_absent, ensure_service_scan_paths_are_absolute,
+        is_managed_unit, normalize_unit_name, systemd_show_list_tokens,
     };
     use crate::config::AppConfig;
 
@@ -956,18 +927,17 @@ mod tests {
     }
 
     #[test]
-    fn systemctl_environment_values_are_decoded() {
+    fn systemd_unit_path_tokens_are_decoded() {
         assert_eq!(
-            decode_systemctl_env_value("$'/tmp/with space'").unwrap(),
-            "/tmp/with space"
-        );
-        assert_eq!(
-            decode_systemctl_env_value("$'/tmp/with\\x20hex'").unwrap(),
-            "/tmp/with hex"
-        );
-        assert_eq!(
-            decode_systemctl_env_value("\"/tmp/with\\\"quote\"").unwrap(),
-            "/tmp/with\"quote"
+            systemd_show_list_tokens(
+                "/tmp/xdg\\x20config/systemd/user.control /tmp/xdg\\x20config/systemd/user /tmp/\\303\\274/systemd/user"
+            )
+            .unwrap(),
+            vec![
+                "/tmp/xdg config/systemd/user.control".to_string(),
+                "/tmp/xdg config/systemd/user".to_string(),
+                "/tmp/\u{fc}/systemd/user".to_string()
+            ]
         );
     }
 

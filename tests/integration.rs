@@ -3140,7 +3140,7 @@ fn service_install_rejects_control_characters_in_unit_values() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn service_install_decodes_quoted_manager_xdg_config_home() {
+fn service_install_uses_manager_unit_path_with_escaped_spaces() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
     fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
@@ -3150,11 +3150,11 @@ fn service_install_decodes_quoted_manager_xdg_config_home() {
     let unit_path = xdg_config_home
         .join("systemd/user")
         .join("claudemdeez-test.service");
+    let unit_path_token = systemd_show_path_token(&xdg_config_home);
     let path = fake_systemctl_path(
         &fixture,
         &format!(
-            "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then echo \"XDG_CONFIG_HOME=$'{}'\"; exit 0; fi\nexit 0\n",
-            xdg_config_home.display()
+            "#!/bin/sh\nif [ \"$2\" = \"show\" ]; then printf '%s\\n' \"{unit_path_token}/systemd/user.control /run/user/1000/systemd/user.control {unit_path_token}/systemd/user /etc/systemd/user\"; exit 0; fi\nexit 0\n"
         ),
     );
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
@@ -3176,7 +3176,7 @@ fn service_install_decodes_quoted_manager_xdg_config_home() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(unit_path.to_str().unwrap()));
-    assert!(!stdout.contains("$'"));
+    assert!(!stdout.contains("\\x20"));
     assert!(!unit_path.exists());
 }
 
@@ -4331,10 +4331,11 @@ fn write_config_roots(path: &Path, roots: &[&Path]) {
 
 #[cfg(target_os = "linux")]
 fn fake_systemctl_path_with_xdg(fixture: &Fixture, xdg_config_home: &Path) -> String {
+    let unit_path_token = systemd_show_path_token(xdg_config_home);
     fake_systemctl_path(
         fixture,
         &format!(
-            "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then echo XDG_CONFIG_HOME={}; exit 0; fi\nexit 0\n",
+            "#!/bin/sh\nif [ \"$2\" = \"show\" ]; then printf '%s\\n' \"{unit_path_token}/systemd/user.control /run/user/1000/systemd/user.control {unit_path_token}/systemd/user /etc/systemd/user\"; exit 0; fi\nif [ \"$2\" = \"show-environment\" ]; then echo XDG_CONFIG_HOME={}; exit 0; fi\nexit 0\n",
             xdg_config_home.display()
         ),
     )
@@ -4344,8 +4345,13 @@ fn fake_systemctl_path_with_xdg(fixture: &Fixture, xdg_config_home: &Path) -> St
 fn fake_systemctl_path_failing_show_env(fixture: &Fixture) -> String {
     fake_systemctl_path(
         fixture,
-        "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then exit 1; fi\nexit 0\n",
+        "#!/bin/sh\nif [ \"$2\" = \"show\" ]; then exit 1; fi\nif [ \"$2\" = \"show-environment\" ]; then exit 1; fi\nexit 0\n",
     )
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_show_path_token(path: &Path) -> String {
+    path.display().to_string().replace(' ', "\\x20")
 }
 
 #[cfg(target_os = "linux")]
