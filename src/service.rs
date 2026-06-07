@@ -660,7 +660,7 @@ fn manager_unit_fragment_path(unit_name: &str, require_systemd: bool) -> Result<
         .output()
     {
         Ok(output) => output,
-        Err(error) if !require_systemd => return Ok(None),
+        Err(_error) if !require_systemd => return Ok(None),
         Err(error) => {
             bail!("failed to query systemd user unit {unit_name}: {error}");
         }
