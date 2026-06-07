@@ -455,9 +455,21 @@ fn quote_systemd_env_value(value: &str) -> String {
 
 fn validate_unit_spec(spec: &UnitSpec) -> Result<()> {
     validate_systemd_path("unit file", &spec.unit_path)?;
-    validate_systemd_path("binary", &spec.bin_path)?;
+    validate_systemd_command_path(&spec.bin_path)?;
     validate_systemd_path("config", &spec.config_path)?;
     validate_systemd_path("data directory", &spec.data_dir)?;
+    Ok(())
+}
+
+fn validate_systemd_command_path(path: &Path) -> Result<()> {
+    validate_systemd_path("binary", path)?;
+    let text = path.to_str().expect("validated UTF-8 path");
+    if text.chars().any(|ch| matches!(ch, '\'' | '"' | '\\')) {
+        bail!(
+            "service binary path contains characters systemd cannot use in ExecStart: {}",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -583,7 +595,7 @@ fn validate_unit_path_writable(unit_path: &Path) -> Result<()> {
             existing_parent.display()
         );
     }
-    if metadata.permissions().readonly() || !current_user_can_write(existing_parent)? {
+    if metadata.permissions().readonly() || !current_user_can_write_directory(existing_parent)? {
         bail!(
             "systemd user unit parent {} is not writable",
             existing_parent.display()
@@ -596,24 +608,42 @@ fn current_user_can_write(path: &Path) -> Result<bool> {
     #[cfg(unix)]
     {
         const W_OK: i32 = 2;
-
-        unsafe extern "C" {
-            fn access(pathname: *const std::os::raw::c_char, mode: i32) -> i32;
-        }
-
-        let path = CString::new(path.as_os_str().as_bytes()).with_context(|| {
-            format!(
-                "systemd user unit path {} contains an interior NUL",
-                path.display()
-            )
-        })?;
-        Ok(unsafe { access(path.as_ptr(), W_OK) == 0 })
+        current_user_can_access(path, W_OK)
     }
 
     #[cfg(not(unix))]
     {
         Ok(!fs::metadata(path)?.permissions().readonly())
     }
+}
+
+fn current_user_can_write_directory(path: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        const W_OK: i32 = 2;
+        const X_OK: i32 = 1;
+        current_user_can_access(path, W_OK | X_OK)
+    }
+
+    #[cfg(not(unix))]
+    {
+        Ok(!fs::metadata(path)?.permissions().readonly())
+    }
+}
+
+#[cfg(unix)]
+fn current_user_can_access(path: &Path, mode: i32) -> Result<bool> {
+    unsafe extern "C" {
+        fn access(pathname: *const std::os::raw::c_char, mode: i32) -> i32;
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).with_context(|| {
+        format!(
+            "systemd user unit path {} contains an interior NUL",
+            path.display()
+        )
+    })?;
+    Ok(unsafe { access(path.as_ptr(), mode) == 0 })
 }
 
 fn nearest_existing_ancestor(mut path: &Path) -> Option<&Path> {
@@ -701,8 +731,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        MANAGED_MARKER, UnitSpec, build_unit, ensure_existing_unit_is_managed_or_absent,
-        ensure_service_scan_paths_are_absolute, is_managed_unit, normalize_unit_name,
+        MANAGED_MARKER, UnitSpec, build_unit, current_user_can_write_directory,
+        ensure_existing_unit_is_managed_or_absent, ensure_service_scan_paths_are_absolute,
+        is_managed_unit, normalize_unit_name,
     };
     use crate::config::AppConfig;
 
@@ -801,6 +832,22 @@ mod tests {
 
         let error = ensure_existing_unit_is_managed_or_absent(&link).unwrap_err();
         assert!(error.to_string().contains("symlinked systemd user unit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_writability_requires_search_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("write-only-dir");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o222)).unwrap();
+
+        assert!(!current_user_can_write_directory(&directory).unwrap());
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(current_user_can_write_directory(&directory).unwrap());
     }
 
     #[test]

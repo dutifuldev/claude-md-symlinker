@@ -3111,6 +3111,42 @@ fn service_install_rejects_control_characters_in_unit_values() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn service_install_rejects_systemd_unsafe_binary_path() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_path = xdg_config_home
+        .join("systemd/user")
+        .join("claudemdeez-test.service");
+    let bin_path = fixture.root.path().join("bin/claude'mdeez");
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+            "--bin",
+            bin_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service binary path contains characters systemd cannot use"));
+    assert!(!unit_path.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn service_install_rejects_disabled_watch_config() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
