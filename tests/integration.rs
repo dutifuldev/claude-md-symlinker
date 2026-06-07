@@ -2959,6 +2959,71 @@ fn watch_honors_json_output_flag() {
 }
 
 #[test]
+fn service_install_requires_configured_roots() {
+    let fixture = Fixture::new();
+    let config_path = fixture.root.path().join("service-empty.toml");
+    fs::write(&config_path, "[scan]\nroots = []\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service install requires configured scan roots"));
+}
+
+#[test]
+fn service_install_dry_run_does_not_write_unit() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_path = xdg_config_home
+        .join("systemd/user")
+        .join("claudemdeez-test.service");
+    let bin_path = fixture.root.path().join("bin/claudemdeez");
+    let data_dir = fixture.root.path().join("data");
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+            "--bin",
+            bin_path.to_str().unwrap(),
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("would write systemd user unit"));
+    assert!(stdout.contains("claudemdeez-test.service"));
+    assert!(!unit_path.exists());
+}
+
+#[test]
 fn clean_invalid_exclude_leaves_managed_target_in_place() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
