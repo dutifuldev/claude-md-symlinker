@@ -3046,11 +3046,13 @@ fn service_install_treats_empty_xdg_config_home_as_unset() {
     write_config_roots(&config_path, &[&repo]);
     let home = fixture.root.path().join("home");
     fs::create_dir_all(&home).unwrap();
+    let path = fake_systemctl_path_failing_show_env(&fixture);
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", "")
         .env("HOME", &home)
+        .env("PATH", path)
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -3230,12 +3232,14 @@ fn service_install_dry_run_rejects_unwritable_unit_dir() {
     let xdg_config_home = fixture.root.path().join("xdg-config");
     let unit_dir = xdg_config_home.join("systemd/user");
     fs::create_dir_all(&unit_dir).unwrap();
+    let path = fake_systemctl_path_with_xdg(&fixture, &xdg_config_home);
     let original_permissions = fs::metadata(&unit_dir).unwrap().permissions();
     fs::set_permissions(&unit_dir, fs::Permissions::from_mode(0o555)).unwrap();
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -3271,6 +3275,7 @@ fn service_install_dry_run_rejects_readonly_managed_unit() {
     let unit_dir = xdg_config_home.join("systemd/user");
     fs::create_dir_all(&unit_dir).unwrap();
     let unit_path = unit_dir.join("claudemdeez-test.service");
+    let path = fake_systemctl_path_with_xdg(&fixture, &xdg_config_home);
     fs::write(
         &unit_path,
         "# claudemdeez managed systemd user unit\n[Service]\nExecStart=/bin/true\n",
@@ -3282,6 +3287,7 @@ fn service_install_dry_run_rejects_readonly_managed_unit() {
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -3315,10 +3321,12 @@ fn service_install_dry_run_refuses_unmanaged_unit_conflict() {
     fs::create_dir_all(&unit_dir).unwrap();
     let unit_path = unit_dir.join("claudemdeez-test.service");
     fs::write(&unit_path, "[Service]\nExecStart=/bin/true\n").unwrap();
+    let path = fake_systemctl_path_with_xdg(&fixture, &xdg_config_home);
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -3373,10 +3381,12 @@ fn service_start_dry_run_refuses_unmanaged_unit_conflict() {
     fs::create_dir_all(&unit_dir).unwrap();
     let unit_path = unit_dir.join("claudemdeez-test.service");
     fs::write(&unit_path, "[Service]\nExecStart=/bin/true\n").unwrap();
+    let path = fake_systemctl_path_with_xdg(&fixture, &xdg_config_home);
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
         .args([
             "--dry-run",
             "service",
@@ -3405,10 +3415,12 @@ fn service_uninstall_dry_run_refuses_unmanaged_unit_conflict() {
     fs::create_dir_all(&unit_dir).unwrap();
     let unit_path = unit_dir.join("claudemdeez-test.service");
     fs::write(&unit_path, "[Service]\nExecStart=/bin/true\n").unwrap();
+    let path = fake_systemctl_path_with_xdg(&fixture, &xdg_config_home);
     let bin = env!("CARGO_BIN_EXE_claudemdeez");
 
     let output = Command::new(bin)
         .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
         .args([
             "--dry-run",
             "service",
@@ -3446,7 +3458,10 @@ fn service_uninstall_surfaces_disable_failure() {
     let fake_systemctl = fake_bin_dir.join("systemctl");
     fs::write(
         &fake_systemctl,
-        "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then exit 0; fi\nif [ \"$2\" = \"disable\" ]; then echo disable failed >&2; exit 42; fi\nexit 0\n",
+        format!(
+            "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then echo XDG_CONFIG_HOME={}; exit 0; fi\nif [ \"$2\" = \"disable\" ]; then echo disable failed >&2; exit 42; fi\nexit 0\n",
+            xdg_config_home.display()
+        ),
     )
     .unwrap();
     make_executable(&fake_systemctl);
@@ -4150,6 +4165,39 @@ fn write_config_roots(path: &Path, roots: &[&Path]) {
         .collect::<Vec<_>>()
         .join(", ");
     fs::write(path, format!("[scan]\nroots = [{roots}]\n")).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn fake_systemctl_path_with_xdg(fixture: &Fixture, xdg_config_home: &Path) -> String {
+    fake_systemctl_path(
+        fixture,
+        &format!(
+            "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then echo XDG_CONFIG_HOME={}; exit 0; fi\nexit 0\n",
+            xdg_config_home.display()
+        ),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn fake_systemctl_path_failing_show_env(fixture: &Fixture) -> String {
+    fake_systemctl_path(
+        fixture,
+        "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then exit 1; fi\nexit 0\n",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn fake_systemctl_path(fixture: &Fixture, script: &str) -> String {
+    let fake_bin_dir = fixture.root.path().join("fake-systemctl-bin");
+    fs::create_dir_all(&fake_bin_dir).unwrap();
+    let fake_systemctl = fake_bin_dir.join("systemctl");
+    fs::write(&fake_systemctl, script).unwrap();
+    make_executable(&fake_systemctl);
+    format!(
+        "{}:{}",
+        fake_bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 #[cfg(unix)]

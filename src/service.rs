@@ -378,16 +378,55 @@ fn unit_path(unit_name: &str) -> Result<PathBuf> {
 }
 
 fn systemd_user_dir() -> Result<PathBuf> {
+    if let Some(path) = manager_user_config_dir()? {
+        return Ok(path.join("systemd/user"));
+    }
+
+    Ok(process_user_config_dir()?.join("systemd/user"))
+}
+
+fn manager_user_config_dir() -> Result<Option<PathBuf>> {
+    let output = match Command::new("systemctl")
+        .arg("--user")
+        .arg("show-environment")
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut home = None;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("XDG_CONFIG_HOME=")
+            && !value.is_empty()
+        {
+            return Ok(Some(absolute_expanded_path(Path::new(value))?));
+        }
+        if let Some(value) = line.strip_prefix("HOME=")
+            && !value.is_empty()
+        {
+            home = Some(absolute_expanded_path(Path::new(value))?);
+        }
+    }
+
+    Ok(home.map(|path| path.join(".config")))
+}
+
+fn process_user_config_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os("XDG_CONFIG_HOME")
         && !path.as_os_str().is_empty()
     {
-        return Ok(absolute_expanded_path(&PathBuf::from(path))?.join("systemd/user"));
+        return absolute_expanded_path(&PathBuf::from(path));
     }
     let home = env::var_os("HOME").context("HOME is not set; cannot locate systemd user dir")?;
     if home.as_os_str().is_empty() {
         bail!("HOME is empty; cannot locate systemd user dir");
     }
-    Ok(PathBuf::from(home).join(".config/systemd/user"))
+    Ok(PathBuf::from(home).join(".config"))
 }
 
 fn absolute_expanded_path(path: &Path) -> Result<PathBuf> {
