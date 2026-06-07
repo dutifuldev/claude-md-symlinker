@@ -4,6 +4,9 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[cfg(unix)]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
@@ -109,7 +112,7 @@ fn install(
         run_systemctl_checked(&["enable", &spec.unit_name])?;
     }
     if args.now {
-        run_systemctl_checked(&["start", &spec.unit_name])?;
+        run_systemctl_checked(&["restart", &spec.unit_name])?;
     }
 
     print_report(
@@ -544,7 +547,7 @@ fn existing_managed_unit(unit_path: &Path) -> Result<Option<String>> {
 fn validate_unit_path_writable(unit_path: &Path) -> Result<()> {
     match fs::symlink_metadata(unit_path) {
         Ok(metadata) => {
-            if metadata.permissions().readonly() {
+            if metadata.permissions().readonly() || !current_user_can_write(unit_path)? {
                 bail!("systemd user unit {} is not writable", unit_path.display());
             }
             return Ok(());
@@ -580,13 +583,37 @@ fn validate_unit_path_writable(unit_path: &Path) -> Result<()> {
             existing_parent.display()
         );
     }
-    if metadata.permissions().readonly() {
+    if metadata.permissions().readonly() || !current_user_can_write(existing_parent)? {
         bail!(
             "systemd user unit parent {} is not writable",
             existing_parent.display()
         );
     }
     Ok(())
+}
+
+fn current_user_can_write(path: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        const W_OK: i32 = 2;
+
+        unsafe extern "C" {
+            fn access(pathname: *const std::os::raw::c_char, mode: i32) -> i32;
+        }
+
+        let path = CString::new(path.as_os_str().as_bytes()).with_context(|| {
+            format!(
+                "systemd user unit path {} contains an interior NUL",
+                path.display()
+            )
+        })?;
+        Ok(unsafe { access(path.as_ptr(), W_OK) == 0 })
+    }
+
+    #[cfg(not(unix))]
+    {
+        Ok(!fs::metadata(path)?.permissions().readonly())
+    }
 }
 
 fn nearest_existing_ancestor(mut path: &Path) -> Option<&Path> {
