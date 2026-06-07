@@ -34,14 +34,19 @@ struct UnitSpec {
 
 pub fn run(
     command: &ServiceCommand,
-    loaded: &LoadedConfig,
+    loaded: Option<&LoadedConfig>,
     dry_run: bool,
     json: bool,
 ) -> Result<u8> {
     ensure_linux()?;
 
     match command {
-        ServiceCommand::Install(args) => install(args, loaded, dry_run, json),
+        ServiceCommand::Install(args) => install(
+            args,
+            loaded.context("service install requires loaded config")?,
+            dry_run,
+            json,
+        ),
         ServiceCommand::Uninstall(args) => uninstall(args, dry_run, json),
         ServiceCommand::Start(args) => systemctl_unit_action("start", args, dry_run, json),
         ServiceCommand::Stop(args) => systemctl_unit_action("stop", args, dry_run, json),
@@ -79,14 +84,7 @@ fn install(
     }
 
     ensure_systemd_user_available()?;
-    if let Ok(existing) = fs::read_to_string(&spec.unit_path)
-        && !is_managed_unit(&existing)
-    {
-        bail!(
-            "refusing to overwrite unmanaged systemd user unit {}",
-            spec.unit_path.display()
-        );
-    }
+    ensure_existing_unit_is_managed_or_absent(&spec.unit_path)?;
 
     if let Some(parent) = spec.unit_path.parent() {
         fs::create_dir_all(parent)
@@ -379,6 +377,26 @@ fn is_managed_unit(text: &str) -> bool {
     text.lines().any(|line| line == MANAGED_MARKER)
 }
 
+fn ensure_existing_unit_is_managed_or_absent(unit_path: &Path) -> Result<()> {
+    match fs::read_to_string(unit_path) {
+        Ok(existing) if !is_managed_unit(&existing) => {
+            bail!(
+                "refusing to overwrite unmanaged systemd user unit {}",
+                unit_path.display()
+            );
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            bail!(
+                "refusing to overwrite unreadable systemd user unit {}: {}",
+                unit_path.display(),
+                error
+            );
+        }
+    }
+}
+
 fn ensure_linux() -> Result<()> {
     if cfg!(target_os = "linux") {
         Ok(())
@@ -446,7 +464,10 @@ fn print_report(json: bool, report: ServiceReport) -> Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{UnitSpec, build_unit, is_managed_unit, normalize_unit_name};
+    use super::{
+        MANAGED_MARKER, UnitSpec, build_unit, ensure_existing_unit_is_managed_or_absent,
+        is_managed_unit, normalize_unit_name,
+    };
 
     #[test]
     fn unit_name_is_normalized_and_validated() {
@@ -502,5 +523,27 @@ mod tests {
             )
         );
         assert!(unit.contains("Environment=\"CLAUDEMDEEZ_DATA_DIR=/home/user/data%%dir\""));
+    }
+
+    #[test]
+    fn existing_unit_must_be_readable_and_managed() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing.service");
+        let managed = temp.path().join("managed.service");
+        let unmanaged = temp.path().join("unmanaged.service");
+        let invalid_utf8 = temp.path().join("invalid.service");
+
+        assert!(ensure_existing_unit_is_managed_or_absent(&missing).is_ok());
+
+        std::fs::write(&managed, format!("{MANAGED_MARKER}\n[Service]\n")).unwrap();
+        assert!(ensure_existing_unit_is_managed_or_absent(&managed).is_ok());
+
+        std::fs::write(&unmanaged, "[Service]\n").unwrap();
+        let error = ensure_existing_unit_is_managed_or_absent(&unmanaged).unwrap_err();
+        assert!(error.to_string().contains("unmanaged systemd user unit"));
+
+        std::fs::write(&invalid_utf8, b"\xff").unwrap();
+        let error = ensure_existing_unit_is_managed_or_absent(&invalid_utf8).unwrap_err();
+        assert!(error.to_string().contains("unreadable systemd user unit"));
     }
 }

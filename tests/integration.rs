@@ -3024,6 +3024,48 @@ fn service_install_dry_run_does_not_write_unit() {
 }
 
 #[test]
+fn service_control_commands_do_not_require_valid_config() {
+    let fixture = Fixture::new();
+    let config_path = fixture.root.path().join("bad-service-config.toml");
+    fs::write(&config_path, "not valid toml =").unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let uninstall = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "uninstall",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service uninstall dry-run runs");
+
+    assert_eq!(uninstall.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&uninstall.stdout);
+    assert!(stdout.contains("would remove managed systemd user unit"));
+
+    let install = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(install.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&install.stderr);
+    assert!(stderr.contains("failed to parse config"));
+}
+
+#[test]
 fn clean_invalid_exclude_leaves_managed_target_in_place() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");

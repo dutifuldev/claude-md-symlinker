@@ -125,8 +125,17 @@ fn run() -> Result<u8> {
             Ok(0)
         }
         cli::Command::Service(service_args) => {
-            let loaded = config::load(args.config.as_deref())?;
-            service::run(&service_args.command, &loaded, args.dry_run, args.json)
+            let loaded = if matches!(&service_args.command, cli::ServiceCommand::Install(_)) {
+                Some(config::load(args.config.as_deref())?)
+            } else {
+                None
+            };
+            service::run(
+                &service_args.command,
+                loaded.as_ref(),
+                args.dry_run,
+                args.json,
+            )
         }
     }
 }
