@@ -290,13 +290,13 @@ fn install_spec(args: &ServiceInstallArgs, loaded: &LoadedConfig) -> Result<Unit
 
 fn build_unit(spec: &UnitSpec) -> String {
     let exec_args = [
-        spec.bin_path.as_path(),
-        Path::new("--config"),
-        spec.config_path.as_path(),
-        Path::new("watch"),
+        quote_systemd_exec_command(&spec.bin_path.to_string_lossy()),
+        quote_systemd_exec_arg("--config"),
+        quote_systemd_exec_arg(&spec.config_path.to_string_lossy()),
+        quote_systemd_exec_arg("watch"),
     ]
     .iter()
-    .map(|arg| quote_systemd_exec_arg(&arg.to_string_lossy()))
+    .map(String::as_str)
     .collect::<Vec<_>>()
     .join(" ");
     let data_env = format!("CLAUDEMDEEZ_DATA_DIR={}", spec.data_dir.display());
@@ -399,6 +399,10 @@ fn absolute_expanded_path(path: &Path) -> Result<PathBuf> {
 
 fn quote_systemd_exec_arg(value: &str) -> String {
     quote_systemd_value(value, true)
+}
+
+fn quote_systemd_exec_command(value: &str) -> String {
+    quote_systemd_value(value, false)
 }
 
 fn quote_systemd_env_value(value: &str) -> String {
@@ -629,7 +633,7 @@ mod tests {
 
         assert!(
             unit.contains(
-                "ExecStart=\"/home/user/bin/claude%%mdeez$$tool\" \"--config\" \"/home/user/configs/claude\\\"mdeez$$cfg.toml\" \"watch\""
+                "ExecStart=\"/home/user/bin/claude%%mdeez$tool\" \"--config\" \"/home/user/configs/claude\\\"mdeez$$cfg.toml\" \"watch\""
             )
         );
         assert!(unit.contains("Environment=\"CLAUDEMDEEZ_DATA_DIR=/home/user/data%%dir$extra\""));
