@@ -3219,6 +3219,91 @@ fn service_install_dry_run_does_not_write_unit() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn service_install_dry_run_rejects_unwritable_unit_dir() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_dir = xdg_config_home.join("systemd/user");
+    fs::create_dir_all(&unit_dir).unwrap();
+    let original_permissions = fs::metadata(&unit_dir).unwrap().permissions();
+    fs::set_permissions(&unit_dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    fs::set_permissions(&unit_dir, original_permissions).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("systemd user unit parent"));
+    assert!(stderr.contains("is not writable"));
+    assert!(!unit_dir.join("claudemdeez-test.service").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn service_install_dry_run_rejects_readonly_managed_unit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    fs::write(repo.join("AGENTS.md"), "canonical\n").unwrap();
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_dir = xdg_config_home.join("systemd/user");
+    fs::create_dir_all(&unit_dir).unwrap();
+    let unit_path = unit_dir.join("claudemdeez-test.service");
+    fs::write(
+        &unit_path,
+        "# claudemdeez managed systemd user unit\n[Service]\nExecStart=/bin/true\n",
+    )
+    .unwrap();
+    let original_permissions = fs::metadata(&unit_path).unwrap().permissions();
+    fs::set_permissions(&unit_path, fs::Permissions::from_mode(0o444)).unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    fs::set_permissions(&unit_path, original_permissions).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("systemd user unit"));
+    assert!(stderr.contains("is not writable"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn service_install_dry_run_refuses_unmanaged_unit_conflict() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -3341,6 +3426,49 @@ fn service_uninstall_dry_run_refuses_unmanaged_unit_conflict() {
         fs::read_to_string(&unit_path).unwrap(),
         "[Service]\nExecStart=/bin/true\n"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn service_uninstall_surfaces_disable_failure() {
+    let fixture = Fixture::new();
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_dir = xdg_config_home.join("systemd/user");
+    fs::create_dir_all(&unit_dir).unwrap();
+    let unit_path = unit_dir.join("claudemdeez-test.service");
+    fs::write(
+        &unit_path,
+        "# claudemdeez managed systemd user unit\n[Service]\nExecStart=/bin/true\n",
+    )
+    .unwrap();
+    let fake_bin_dir = fixture.root.path().join("bin");
+    fs::create_dir_all(&fake_bin_dir).unwrap();
+    let fake_systemctl = fake_bin_dir.join("systemctl");
+    fs::write(
+        &fake_systemctl,
+        "#!/bin/sh\nif [ \"$2\" = \"show-environment\" ]; then exit 0; fi\nif [ \"$2\" = \"disable\" ]; then echo disable failed >&2; exit 42; fi\nexit 0\n",
+    )
+    .unwrap();
+    make_executable(&fake_systemctl);
+    let path = format!(
+        "{}:{}",
+        fake_bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .env("PATH", path)
+        .args(["service", "uninstall", "--unit-name", "claudemdeez-test"])
+        .output()
+        .expect("service uninstall runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("systemctl --user disable --now claudemdeez-test.service failed"));
+    assert!(stderr.contains("disable failed"));
+    assert!(unit_path.exists());
 }
 
 #[cfg(target_os = "linux")]
@@ -4022,6 +4150,15 @@ fn write_config_roots(path: &Path, roots: &[&Path]) {
         .collect::<Vec<_>>()
         .join(", ");
     fs::write(path, format!("[scan]\nroots = [{roots}]\n")).unwrap();
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
 }
 
 fn deep_relative_path(component: &str, depth: usize, file_name: &str) -> PathBuf {

@@ -76,6 +76,7 @@ fn install(
 
     let spec = install_spec(args, loaded)?;
     ensure_existing_unit_is_managed_or_absent(&spec.unit_path)?;
+    validate_unit_path_writable(&spec.unit_path)?;
     let unit = build_unit(&spec);
 
     if dry_run {
@@ -94,6 +95,7 @@ fn install(
 
     ensure_systemd_user_available()?;
     ensure_existing_unit_is_managed_or_absent(&spec.unit_path)?;
+    validate_unit_path_writable(&spec.unit_path)?;
 
     if let Some(parent) = spec.unit_path.parent() {
         fs::create_dir_all(parent)
@@ -167,7 +169,7 @@ fn uninstall(args: &ServiceUnitArgs, dry_run: bool, json: bool) -> Result<u8> {
     }
 
     ensure_systemd_user_available()?;
-    let _ = run_systemctl_status(&["disable", "--now", &unit_name])?;
+    run_systemctl_checked(&["disable", "--now", &unit_name])?;
     fs::remove_file(&unit_path)
         .with_context(|| format!("failed to remove {}", unit_path.display()))?;
     run_systemctl_checked(&["daemon-reload"])?;
@@ -498,6 +500,63 @@ fn existing_managed_unit(unit_path: &Path) -> Result<Option<String>> {
         );
     }
     Ok(Some(existing))
+}
+
+fn validate_unit_path_writable(unit_path: &Path) -> Result<()> {
+    match fs::symlink_metadata(unit_path) {
+        Ok(metadata) => {
+            if metadata.permissions().readonly() {
+                bail!("systemd user unit {} is not writable", unit_path.display());
+            }
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            bail!(
+                "failed to inspect systemd user unit {}: {}",
+                unit_path.display(),
+                error
+            );
+        }
+    }
+
+    let parent = unit_path
+        .parent()
+        .with_context(|| format!("systemd user unit {} has no parent", unit_path.display()))?;
+    let existing_parent = nearest_existing_ancestor(parent).with_context(|| {
+        format!(
+            "systemd user unit parent {} has no existing ancestor",
+            parent.display()
+        )
+    })?;
+    let metadata = fs::metadata(existing_parent).with_context(|| {
+        format!(
+            "failed to inspect systemd user unit parent {}",
+            existing_parent.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "systemd user unit parent {} is not a directory",
+            existing_parent.display()
+        );
+    }
+    if metadata.permissions().readonly() {
+        bail!(
+            "systemd user unit parent {} is not writable",
+            existing_parent.display()
+        );
+    }
+    Ok(())
+}
+
+fn nearest_existing_ancestor(mut path: &Path) -> Option<&Path> {
+    loop {
+        if path.exists() {
+            return Some(path);
+        }
+        path = path.parent()?;
+    }
 }
 
 fn ensure_linux() -> Result<()> {
