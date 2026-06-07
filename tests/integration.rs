@@ -3010,6 +3010,73 @@ fn service_install_rejects_relative_scan_paths() {
 }
 
 #[test]
+fn service_install_rejects_disabled_watch_config() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service-watch-disabled.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[scan]\nroots = [\"{}\"]\n\n[watch]\nenabled = false\n",
+            repo.display()
+        ),
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service install requires watch to be enabled"));
+}
+
+#[test]
+fn service_install_dry_run_validates_git_exclude_mode() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service-global-exclude.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[scan]\nroots = [\"{}\"]\n\n[git]\nexclude_mode = \"global\"\n",
+            repo.display()
+        ),
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service install requires valid Git exclude mode"));
+    assert!(stderr.contains("global exclude mode is disabled"));
+}
+
+#[test]
 fn service_install_dry_run_does_not_write_unit() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");

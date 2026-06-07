@@ -11,6 +11,7 @@ use crate::{
     adapters,
     cli::{ServiceCommand, ServiceInstallArgs, ServiceUnitArgs},
     config::{self, LoadedConfig},
+    exclude,
 };
 
 const MANAGED_MARKER: &str = "# claudemdeez managed systemd user unit";
@@ -63,6 +64,9 @@ fn install(
     json: bool,
 ) -> Result<u8> {
     ensure_service_scan_paths_are_absolute(&loaded.config)?;
+    ensure_watch_enabled(&loaded.config)?;
+    exclude::validate_mode(loaded.config.git.exclude_mode)
+        .context("service install requires valid Git exclude mode")?;
     adapters::enabled_adapters(&loaded.config)
         .context("service install requires valid adapters")?;
     loaded
@@ -289,7 +293,7 @@ fn build_unit(spec: &UnitSpec) -> String {
         Path::new("watch"),
     ]
     .iter()
-    .map(|arg| quote_systemd_arg(&arg.to_string_lossy()))
+    .map(|arg| quote_systemd_exec_arg(&arg.to_string_lossy()))
     .collect::<Vec<_>>()
     .join(" ");
     let data_env = format!("CLAUDEMDEEZ_DATA_DIR={}", spec.data_dir.display());
@@ -311,9 +315,16 @@ Environment={}
 [Install]
 WantedBy=default.target
 "#,
-        quote_systemd_arg(&data_env),
-        quote_systemd_arg("RUST_LOG=info")
+        quote_systemd_env_value(&data_env),
+        quote_systemd_env_value("RUST_LOG=info")
     )
+}
+
+fn ensure_watch_enabled(config: &config::AppConfig) -> Result<()> {
+    if !config.watch.enabled {
+        bail!("service install requires watch to be enabled; set `watch.enabled = true`");
+    }
+    Ok(())
 }
 
 fn ensure_service_scan_paths_are_absolute(config: &config::AppConfig) -> Result<()> {
@@ -375,14 +386,22 @@ fn absolute_expanded_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn quote_systemd_arg(value: &str) -> String {
+fn quote_systemd_exec_arg(value: &str) -> String {
+    quote_systemd_value(value, true)
+}
+
+fn quote_systemd_env_value(value: &str) -> String {
+    quote_systemd_value(value, false)
+}
+
+fn quote_systemd_value(value: &str, escape_dollar: bool) -> String {
     let mut quoted = String::from("\"");
     for ch in value.chars() {
         match ch {
             '\\' => quoted.push_str("\\\\"),
             '"' => quoted.push_str("\\\""),
             '%' => quoted.push_str("%%"),
-            '$' => quoted.push_str("$$"),
+            '$' if escape_dollar => quoted.push_str("$$"),
             _ => quoted.push(ch),
         }
     }
@@ -575,7 +594,7 @@ mod tests {
                 "ExecStart=\"/home/user/bin/claude%%mdeez$$tool\" \"--config\" \"/home/user/configs/claude\\\"mdeez$$cfg.toml\" \"watch\""
             )
         );
-        assert!(unit.contains("Environment=\"CLAUDEMDEEZ_DATA_DIR=/home/user/data%%dir$$extra\""));
+        assert!(unit.contains("Environment=\"CLAUDEMDEEZ_DATA_DIR=/home/user/data%%dir$extra\""));
     }
 
     #[test]
