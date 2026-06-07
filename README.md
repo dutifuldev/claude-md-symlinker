@@ -1,8 +1,11 @@
-# CLAUDE.mDEEZ
+# CLAUDE.mdeez
 
-CLAUDE.mDEEZ keeps `AGENTS.md` as the canonical agent-instructions file and
+CLAUDE.mdeez keeps `AGENTS.md` as the canonical agent-instructions file and
 creates local compatibility files for tools that still expect their own
 instruction filename.
+
+The name is styled `CLAUDE.mdeez`: the `mdeez` part stands for "extra ez",
+meaning extra easy.
 
 The built-in adapter is:
 
@@ -11,8 +14,8 @@ AGENTS.md -> CLAUDE.md
 ```
 
 In repositories you opt into, `CLAUDE.md` is generated locally and ignored by
-Git only when CLAUDE.mDEEZ created or already owns it. If a repository already
-has a user-owned `CLAUDE.md`, CLAUDE.mDEEZ leaves it untouched and keeps it
+Git only when CLAUDE.mdeez created or already owns it. If a repository already
+has a user-owned `CLAUDE.md`, CLAUDE.mdeez leaves it untouched and keeps it
 visible to Git.
 
 ## Install
@@ -44,7 +47,7 @@ cargo run -- apply ~/repos --dry-run
 
 ## Quick Start
 
-Choose the directories CLAUDE.mDEEZ is allowed to scan:
+Choose the directories CLAUDE.mdeez is allowed to scan:
 
 ```sh
 claudemdeez init ~/repos ~/work
@@ -134,7 +137,7 @@ Global options:
 
 ## Configuration
 
-CLAUDE.mDEEZ uses the platform config directory by default. You can override the
+CLAUDE.mdeez uses the platform config directory by default. You can override the
 config path with `--config <path>` or `CLAUDEMDEEZ_CONFIG`.
 
 The local SQLite state directory can be overridden with `CLAUDEMDEEZ_DATA_DIR`.
@@ -182,7 +185,7 @@ Important fields:
 
 ## Safety Model
 
-CLAUDE.mDEEZ is intentionally conservative:
+CLAUDE.mdeez is intentionally conservative:
 
 - It only scans directories you opt into.
 - It never scans the whole machine by default.
@@ -203,7 +206,7 @@ Managed shims are excluded with the repository-local Git exclude file:
 .git/info/exclude
 ```
 
-CLAUDE.mDEEZ writes a managed block like this:
+CLAUDE.mdeez writes a managed block like this:
 
 ```text
 # claudemdeez managed begin
@@ -213,14 +216,14 @@ CLAUDE.mDEEZ writes a managed block like this:
 
 This file is private to your checkout and is not committed.
 
-If `CLAUDE.md` already exists and is not managed by CLAUDE.mDEEZ:
+If `CLAUDE.md` already exists and is not managed by CLAUDE.mdeez:
 
 - the file is left untouched
 - no ignore entry is added for it
 - Git continues to report it as untracked or tracked normally
 - `apply` reports a conflict and exits with code `2`
 
-To let CLAUDE.mDEEZ manage that repository, move the useful content into
+To let CLAUDE.mdeez manage that repository, move the useful content into
 `AGENTS.md`, then remove or rename the old `CLAUDE.md` and run:
 
 ```sh
@@ -229,7 +232,7 @@ claudemdeez apply
 
 ## Materialization
 
-In `auto` mode, CLAUDE.mDEEZ tries:
+In `auto` mode, CLAUDE.mdeez tries:
 
 1. Relative symlink
 2. Hardlink, only when `allow_hardlink = true`

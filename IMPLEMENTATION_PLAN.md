@@ -1,4 +1,4 @@
-# CLAUDE.mDEEZ Implementation Plan
+# CLAUDE.mdeez Implementation Plan
 
 Status: core implementation complete and merged. The next implementation target
 is Linux `systemd --user` service/timer support for `claudemdeez watch`.
@@ -6,7 +6,7 @@ Packaging follow-ups remain deferred until command behavior is stable.
 
 ## Goal
 
-Build CLAUDE.mDEEZ as a cross-platform local compatibility manager for agent
+Build CLAUDE.mdeez as a cross-platform local compatibility manager for agent
 instruction files.
 
 The core promise:
@@ -21,7 +21,7 @@ It is an `AGENTS.md` compatibility layer.
 
 ## Product Contract
 
-CLAUDE.mDEEZ must preserve these invariants:
+CLAUDE.mdeez must preserve these invariants:
 
 1. `AGENTS.md` is the canonical source file.
 2. `CLAUDE.md` is a generated local compatibility shim.
@@ -181,7 +181,7 @@ Removes or reports stale managed shims.
 
 Behavior:
 
-- Only acts on files proven to be managed by CLAUDE.mDEEZ.
+- Only acts on files proven to be managed by CLAUDE.mdeez.
 - Never removes unknown files.
 - Defaults to conservative behavior.
 - Supports `--dry-run`.
@@ -196,7 +196,7 @@ Example TOML:
 ```toml
 [scan]
 roots = ["~/repos", "~/work"]
-# Hard allowlist. CLAUDE.mDEEZ will not reconcile repositories outside these
+# Hard allowlist. CLAUDE.mdeez will not reconcile repositories outside these
 # directories unless the config is changed.
 
 include_paths = []
@@ -349,7 +349,7 @@ Rules:
 
 Global exclude mode is intentionally not part of the first production system.
 Git global excludes cannot be scoped to configured roots, so a global
-`CLAUDE.md` rule would hide user-owned files in repositories CLAUDE.mDEEZ does
+`CLAUDE.md` rule would hide user-owned files in repositories CLAUDE.mdeez does
 not manage. If a future Git-compatible design can preserve root scoping, add it
 as an explicit opt-in mode with conflict cleanup for older local shims.
 
@@ -449,7 +449,7 @@ events
 
 The filesystem remains authoritative. The state database helps answer:
 
-- Did CLAUDE.mDEEZ create this?
+- Did CLAUDE.mdeez create this?
 - What changed last time?
 - What should `clean` consider?
 - What errors are recurring?
@@ -713,7 +713,7 @@ Linux service support is ready when:
 2. `claudemdeez service start` starts the watcher without root privileges.
 3. Deleting a managed `CLAUDE.md` under configured roots is repaired by the
    running service.
-4. `claudemdeez service uninstall` removes only CLAUDE.mDEEZ-managed units.
+4. `claudemdeez service uninstall` removes only CLAUDE.mdeez-managed units.
 5. Service commands report clear errors when systemd user services are
    unavailable.
 
