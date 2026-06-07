@@ -3039,6 +3039,76 @@ fn service_install_rejects_option_like_unit_name() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn service_install_treats_empty_xdg_config_home_as_unset() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let home = fixture.root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", "")
+        .env("HOME", &home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            home.join(".config/systemd/user/claudemdeez-test.service")
+                .to_str()
+                .unwrap()
+        )
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn service_install_rejects_control_characters_in_unit_values() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service\nbad.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_path = xdg_config_home
+        .join("systemd/user")
+        .join("claudemdeez-test.service");
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service config path must not contain control characters"));
+    assert!(!unit_path.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn service_install_rejects_disabled_watch_config() {
     let fixture = Fixture::new();
     let repo = fixture.repo("repo");
@@ -3175,6 +3245,62 @@ fn service_install_dry_run_refuses_unmanaged_unit_conflict() {
         ])
         .output()
         .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("refusing to use unmanaged systemd user unit"));
+    assert_eq!(
+        fs::read_to_string(&unit_path).unwrap(),
+        "[Service]\nExecStart=/bin/true\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn service_start_dry_run_requires_managed_unit() {
+    let fixture = Fixture::new();
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--dry-run",
+            "service",
+            "start",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service start dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("managed systemd user unit is not installed"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn service_start_dry_run_refuses_unmanaged_unit_conflict() {
+    let fixture = Fixture::new();
+    let xdg_config_home = fixture.root.path().join("xdg-config");
+    let unit_dir = xdg_config_home.join("systemd/user");
+    fs::create_dir_all(&unit_dir).unwrap();
+    let unit_path = unit_dir.join("claudemdeez-test.service");
+    fs::write(&unit_path, "[Service]\nExecStart=/bin/true\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
+        .args([
+            "--dry-run",
+            "service",
+            "start",
+            "--unit-name",
+            "claudemdeez-test",
+        ])
+        .output()
+        .expect("service start dry-run runs");
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);

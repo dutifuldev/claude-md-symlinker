@@ -194,6 +194,7 @@ fn systemctl_unit_action(
 ) -> Result<u8> {
     let unit_name = normalize_unit_name(&args.unit_name)?;
     let unit_path = unit_path(&unit_name)?;
+    ensure_managed_unit_installed(&unit_path)?;
     if dry_run {
         print_report(
             json,
@@ -276,13 +277,15 @@ fn install_spec(args: &ServiceInstallArgs, loaded: &LoadedConfig) -> Result<Unit
         None => absolute_expanded_path(&config::data_dir()?)?,
     };
 
-    Ok(UnitSpec {
+    let spec = UnitSpec {
         unit_path: unit_path(&unit_name)?,
         unit_name,
         config_path: loaded.path.clone(),
         bin_path,
         data_dir,
-    })
+    };
+    validate_unit_spec(&spec)?;
+    Ok(spec)
 }
 
 fn build_unit(spec: &UnitSpec) -> String {
@@ -373,10 +376,15 @@ fn unit_path(unit_name: &str) -> Result<PathBuf> {
 }
 
 fn systemd_user_dir() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
+    if let Some(path) = env::var_os("XDG_CONFIG_HOME")
+        && !path.as_os_str().is_empty()
+    {
         return Ok(absolute_expanded_path(&PathBuf::from(path))?.join("systemd/user"));
     }
     let home = env::var_os("HOME").context("HOME is not set; cannot locate systemd user dir")?;
+    if home.as_os_str().is_empty() {
+        bail!("HOME is empty; cannot locate systemd user dir");
+    }
     Ok(PathBuf::from(home).join(".config/systemd/user"))
 }
 
@@ -395,6 +403,24 @@ fn quote_systemd_exec_arg(value: &str) -> String {
 
 fn quote_systemd_env_value(value: &str) -> String {
     quote_systemd_value(value, false)
+}
+
+fn validate_unit_spec(spec: &UnitSpec) -> Result<()> {
+    validate_systemd_path("unit file", &spec.unit_path)?;
+    validate_systemd_path("binary", &spec.bin_path)?;
+    validate_systemd_path("config", &spec.config_path)?;
+    validate_systemd_path("data directory", &spec.data_dir)?;
+    Ok(())
+}
+
+fn validate_systemd_path(label: &str, path: &Path) -> Result<()> {
+    let Some(text) = path.to_str() else {
+        bail!("service {label} path must be valid UTF-8");
+    };
+    if text.chars().any(char::is_control) {
+        bail!("service {label} path must not contain control characters");
+    }
+    Ok(())
 }
 
 fn quote_systemd_value(value: &str, escape_dollar: bool) -> String {
@@ -418,6 +444,13 @@ fn is_managed_unit(text: &str) -> bool {
 
 fn ensure_existing_unit_is_managed_or_absent(unit_path: &Path) -> Result<()> {
     existing_managed_unit(unit_path).map(|_| ())
+}
+
+fn ensure_managed_unit_installed(unit_path: &Path) -> Result<()> {
+    if existing_managed_unit(unit_path)?.is_some() {
+        return Ok(());
+    }
+    bail!("managed systemd user unit is not installed; run `claudemdeez service install` first");
 }
 
 fn existing_managed_unit(unit_path: &Path) -> Result<Option<String>> {
