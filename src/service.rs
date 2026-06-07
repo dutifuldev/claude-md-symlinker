@@ -349,6 +349,9 @@ fn normalize_unit_name(name: &str) -> Result<String> {
     if trimmed.is_empty() {
         bail!("service unit name must not be empty");
     }
+    if trimmed.starts_with('-') {
+        bail!("service unit name must not start with '-'");
+    }
     if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\0') {
         bail!("service unit name must not contain path separators");
     }
@@ -551,6 +554,7 @@ mod tests {
             normalize_unit_name("claudemdeez-smoke.service").unwrap(),
             "claudemdeez-smoke.service"
         );
+        assert!(normalize_unit_name("-bad").is_err());
         assert!(normalize_unit_name("../bad").is_err());
         assert!(normalize_unit_name("bad name").is_err());
     }

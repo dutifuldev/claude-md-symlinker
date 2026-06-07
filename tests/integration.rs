@@ -2958,6 +2958,7 @@ fn watch_honors_json_output_flag() {
     assert!(!output.contains("Scanned "));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_requires_configured_roots() {
     let fixture = Fixture::new();
@@ -2983,6 +2984,7 @@ fn service_install_requires_configured_roots() {
     assert!(stderr.contains("service install requires configured scan roots"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_rejects_relative_scan_paths() {
     let fixture = Fixture::new();
@@ -3009,6 +3011,33 @@ fn service_install_rejects_relative_scan_paths() {
     assert!(stderr.contains("service install requires absolute scan paths"));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn service_install_rejects_option_like_unit_name() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("repo");
+    let config_path = fixture.root.path().join("service.toml");
+    write_config_roots(&config_path, &[&repo]);
+    let bin = env!("CARGO_BIN_EXE_claudemdeez");
+
+    let output = Command::new(bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--dry-run",
+            "service",
+            "install",
+            "--unit-name=-foo",
+        ])
+        .output()
+        .expect("service install dry-run runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("service unit name must not start with '-'"));
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_rejects_disabled_watch_config() {
     let fixture = Fixture::new();
@@ -3042,6 +3071,7 @@ fn service_install_rejects_disabled_watch_config() {
     assert!(stderr.contains("service install requires watch to be enabled"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_dry_run_validates_git_exclude_mode() {
     let fixture = Fixture::new();
@@ -3076,6 +3106,7 @@ fn service_install_dry_run_validates_git_exclude_mode() {
     assert!(stderr.contains("global exclude mode is disabled"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_dry_run_does_not_write_unit() {
     let fixture = Fixture::new();
@@ -3116,6 +3147,7 @@ fn service_install_dry_run_does_not_write_unit() {
     assert!(!unit_path.exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_dry_run_refuses_unmanaged_unit_conflict() {
     let fixture = Fixture::new();
@@ -3153,6 +3185,7 @@ fn service_install_dry_run_refuses_unmanaged_unit_conflict() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_uninstall_dry_run_refuses_unmanaged_unit_conflict() {
     let fixture = Fixture::new();
@@ -3184,6 +3217,7 @@ fn service_uninstall_dry_run_refuses_unmanaged_unit_conflict() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_install_dry_run_validates_adapter_config() {
     let fixture = Fixture::new();
@@ -3219,6 +3253,7 @@ fn service_install_dry_run_validates_adapter_config() {
     assert!(stderr.contains("must stay inside the repository root"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn service_control_commands_do_not_require_valid_config() {
     let fixture = Fixture::new();
