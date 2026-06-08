@@ -40,6 +40,42 @@ can_prompt() {
     [ -r /dev/tty ] && [ -w /dev/tty ] && ( : < /dev/tty ) 2>/dev/null
 }
 
+resolve_auto_migrate_flag() {
+    [ "${CLAUDE_MD_SYMLINKER_NO_SETUP:-0}" = "1" ] && return
+
+    if [ "${CLAUDE_MD_SYMLINKER_NO_AUTO_MIGRATE:-0}" = "1" ]; then
+        printf '%s\n' "--no-auto-migrate"
+        return
+    fi
+    if [ "${CLAUDE_MD_SYMLINKER_AUTO_MIGRATE:-0}" = "1" ]; then
+        printf '%s\n' "--auto-migrate"
+        return
+    fi
+    if ! can_prompt; then
+        printf '%s\n' "--auto-migrate"
+        return
+    fi
+
+    {
+        printf '%s\n' "Automatically migrate safe existing CLAUDE.md files to AGENTS.md when Claude finds them while working through directories?"
+        printf '\n'
+        printf '%s\n' "This does not scan your whole machine or whole repos. It only applies to CLAUDE.md files found in directories Claude actually enters, and only when the migration passes the safe checks."
+        printf '\n'
+        printf '%s' "Default: yes [Y/n] "
+    } > /dev/tty
+
+    answer=""
+    IFS= read -r answer < /dev/tty || answer=""
+    case "$answer" in
+        n|N|no|No|nO|NO)
+            printf '%s\n' "--no-auto-migrate"
+            ;;
+        *)
+            printf '%s\n' "--auto-migrate"
+            ;;
+    esac
+}
+
 home_dir() {
     if [ -n "${HOME:-}" ]; then
         printf '%s\n' "$HOME"
@@ -134,21 +170,10 @@ ensure_path() {
 
 run_setup() {
     bin="$1"
+    auto_flag="$2"
     os="${CLAUDE_MD_SYMLINKER_OS:-$(uname -s)}"
 
     [ "${CLAUDE_MD_SYMLINKER_NO_SETUP:-0}" = "1" ] && return
-
-    auto_flag=""
-    prompt_stdin=0
-    if [ "${CLAUDE_MD_SYMLINKER_NO_AUTO_MIGRATE:-0}" = "1" ]; then
-        auto_flag="--no-auto-migrate"
-    elif [ "${CLAUDE_MD_SYMLINKER_AUTO_MIGRATE:-0}" = "1" ]; then
-        auto_flag="--auto-migrate"
-    elif can_prompt; then
-        prompt_stdin=1
-    else
-        auto_flag="--auto-migrate"
-    fi
 
     no_service=0
     if [ "$os" = "Darwin" ] || [ "${CLAUDE_MD_SYMLINKER_NO_SERVICE:-0}" = "1" ]; then
@@ -163,11 +188,7 @@ run_setup() {
         set -- "$@" "$auto_flag"
     fi
 
-    if [ "$prompt_stdin" = "1" ]; then
-        "$bin" "$@" < /dev/tty
-    else
-        "$bin" "$@"
-    fi
+    "$bin" "$@"
 }
 
 main() {
@@ -186,9 +207,11 @@ main() {
     archive_name="$APP_NAME-$target.tar.xz"
     checksum_name="$archive_name.sha256"
     base="$(download_base)"
+    auto_flag="$(resolve_auto_migrate_flag)"
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+    say "Installing $APP_NAME for $target"
     download_with_progress "$base/$archive_name" "$tmp/$archive_name" "Downloading $archive_name"
     download_quiet "$base/$checksum_name" "$tmp/$checksum_name"
 
@@ -212,7 +235,7 @@ main() {
 
     ensure_path "$bin_dir" "$prefix"
     say "Installed $APP_NAME to $bin"
-    run_setup "$bin"
+    run_setup "$bin" "$auto_flag"
 }
 
 main "$@"
