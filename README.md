@@ -4,32 +4,32 @@
 expects to find repo-specific context like build commands, coding conventions,
 architecture notes, and workflow rules.
 
-[`AGENTS.md`](https://agents.md/) is "a simple, open format for guiding coding
-agents." It gives agents a predictable place to find the context and
-instructions they need for a repo. It is the brand-neutral, more widely
-accepted standard, as opposed to `CLAUDE.md`.
+[`AGENTS.md`](https://agents.md/) is the industry-wide accepted way to provide
+context to agents. It is the same as CLAUDE.md, but your repo is NOT a billboard
+for Anthropic. Imagine having to include clippy.txt in your project...
 
-Anthropic's workaround for `AGENTS.md` repos is to add a `CLAUDE.md` that
-imports `@AGENTS.md`, or to create a symlink. That works, but it still leaves
-every repo carrying a Claude-branded compatibility file.
+Anthropic is obstinate like a goat and it is now too late for them to back down
+on this convention. They say, "you can add a `CLAUDE.md` that imports `@AGENTS.md` 😉"
+. That works, but it still leaves every repo carrying a Claude-branded 
+compatibility file.
 
 How about no?
 
-claude-md-symlinker lets you commit `AGENTS.md` as the real file. It creates
-local `CLAUDE.md` shims for Claude Code, keeps those shims out of Git, and
-repairs them automatically when they disappear.
+claude-md-symlinker is a service and Claude Code hook that automatically creates
+CLAUDE.md symlinks to AGENTS.md that are not tracked in git, 
+so that you don't have to commit them manually, and everything just works without
+heavy scanning of your filesystem for AGENTS.md files.
 
-The normal result is:
+As Claude Code traverses your filesystem, any discovered AGENTS.md files will be
+symlinked, which gives you automatic AGENTS.md compatibility if you are a Claude
+Code user. If you choose to, it will also move the CLAUDE.md files to AGENTS.md
+while keeping the same compatibility.
+
+In other words:
 
 ```text
-AGENTS.md   # canonical file, committed to Git
-CLAUDE.md   # local generated shim, ignored by Git
-```
-
-On systems with symlink support, the shim is:
-
-```text
-CLAUDE.md -> AGENTS.md
+AGENTS.md                # canonical file, committed to Git
+CLAUDE.md -> AGENTS.md   # local generated shim, ignored by Git
 ```
 
 ## Install
