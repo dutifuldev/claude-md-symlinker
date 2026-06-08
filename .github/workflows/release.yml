@@ -198,6 +198,10 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
           ./scripts/prepare-release-installer.sh "${{ needs.plan.outputs.tag }}"
+          INSTALLER_SCRIPT=target/distrib/claude-md-symlinker-installer.sh \
+            INSTALLER_FIXTURE_DIR=target/distrib \
+            CLAUDE_MD_SYMLINKER_NO_SERVICE=1 \
+            ./scripts/test-installer-local.sh
 
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"

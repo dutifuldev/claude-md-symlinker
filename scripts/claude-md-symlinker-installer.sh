@@ -120,22 +120,23 @@ detect_target() {
 verify_checksum() {
     archive_name="$1"
     checksum_name="$2"
+    expected="$(awk 'NF {print $1; exit}' "$checksum_name")"
+    [ -n "$expected" ] || die "checksum file is empty for $archive_name"
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c "$checksum_name" >/dev/null
-        return
+        actual="$(sha256sum "$archive_name" | awk '{print $1}')"
+    else
+        need_cmd shasum
+        actual="$(shasum -a 256 "$archive_name" | awk '{print $1}')"
     fi
-    need_cmd shasum
-    expected="$(awk '{print $1}' "$checksum_name")"
-    actual="$(shasum -a 256 "$archive_name" | awk '{print $1}')"
     [ "$expected" = "$actual" ] || die "checksum verification failed for $archive_name"
 }
 
 append_path_profile() {
     profile="$1"
     bin_dir="$2"
-    [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return
-    [ -e "$profile" ] || : > "$profile" 2>/dev/null || return
-    grep -F "$bin_dir" "$profile" >/dev/null 2>&1 && return
+    [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return 0
+    [ -e "$profile" ] || : > "$profile" 2>/dev/null || return 0
+    grep -F "$bin_dir" "$profile" >/dev/null 2>&1 && return 0
     {
         printf '\n# %s\n' "$APP_NAME"
         printf 'case ":$PATH:" in\n'
@@ -147,10 +148,10 @@ append_path_profile() {
 
 ensure_path() {
     bin_dir="$1"
-    [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return
+    [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return 0
 
     case ":${PATH:-}:" in
-        *:"$bin_dir":*) return ;;
+        *:"$bin_dir":*) return 0 ;;
     esac
 
     home="$(home_dir)"

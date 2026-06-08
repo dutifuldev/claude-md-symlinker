@@ -5271,7 +5271,7 @@ fn fake_systemctl_path(fixture: &Fixture, script: &str) -> String {
     )
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn make_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
