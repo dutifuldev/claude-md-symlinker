@@ -36,18 +36,21 @@ CLAUDE.md -> AGENTS.md   # local generated shim, ignored by Git
 
 Requirements:
 
-- Linux with `systemd --user`
-- Rust stable
 - Git
 - Claude Code with hooks enabled
+- Linux with `systemd --user` for the background repair service
 
-Install from GitHub:
+Install the prebuilt binary:
 
 ```sh
-cargo install --git https://github.com/dutifuldev/claude-md-symlinker
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh \
+  | sh
 ```
 
-Then install the integration:
+This does not require Rust, Cargo, or compiling anything locally.
+
+Then connect it to Claude Code:
 
 ```sh
 claude-md-symlinker install
@@ -79,6 +82,18 @@ For partial installs:
 ```sh
 claude-md-symlinker install --no-service
 claude-md-symlinker install --no-hooks
+```
+
+On macOS, use hook-only mode until LaunchAgent support lands:
+
+```sh
+claude-md-symlinker install --no-service --auto-migrate
+```
+
+Source install is still available for development:
+
+```sh
+cargo install --git https://github.com/dutifuldev/claude-md-symlinker
 ```
 
 ## How It Works
