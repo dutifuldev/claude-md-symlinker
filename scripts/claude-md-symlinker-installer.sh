@@ -18,6 +18,24 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+download_with_progress() {
+    url="$1"
+    output="$2"
+    label="$3"
+    say "$label"
+    if [ "${CLAUDE_MD_SYMLINKER_NO_PROGRESS:-0}" = "1" ]; then
+        curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$output"
+    else
+        curl -fL --retry 3 --retry-delay 2 --progress-bar "$url" -o "$output"
+    fi
+}
+
+download_quiet() {
+    url="$1"
+    output="$2"
+    curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$output"
+}
+
 home_dir() {
     if [ -n "${HOME:-}" ]; then
         printf '%s\n' "$HOME"
@@ -152,8 +170,8 @@ main() {
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
-    curl -fsSL "$base/$archive_name" -o "$tmp/$archive_name"
-    curl -fsSL "$base/$checksum_name" -o "$tmp/$checksum_name"
+    download_with_progress "$base/$archive_name" "$tmp/$archive_name" "Downloading $archive_name"
+    download_quiet "$base/$checksum_name" "$tmp/$checksum_name"
 
     (
         cd "$tmp" || exit 1
