@@ -60,8 +60,16 @@ claude-md-symlinker must preserve these invariants:
 Normal setup:
 
 ```sh
-cargo install --git https://github.com/dutifuldev/claude-md-symlinker
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh \
+  | sh
 claude-md-symlinker install
+```
+
+Source install remains a developer fallback:
+
+```sh
+cargo install --git https://github.com/dutifuldev/claude-md-symlinker
 ```
 
 After install:
@@ -190,6 +198,44 @@ systemd --user service
 ```
 
 No default flow walks `~`, `/`, or broad developer directories.
+
+## Release Installer
+
+Normal users should not need Rust, Cargo, or local compilation.
+
+The public install path should be a one-line shell installer backed by GitHub
+Releases:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh \
+  | sh
+```
+
+Use `cargo-dist` for release packaging instead of a hand-rolled release
+pipeline.
+
+Release behavior:
+
+1. Build precompiled binaries for Linux and macOS.
+2. Upload release artifacts to GitHub Releases.
+3. Publish a shell installer that detects OS and CPU architecture.
+4. Verify downloaded artifacts with release checksums.
+5. Install the binary into a user-local bin directory.
+6. Leave Claude hook and service setup to `claude-md-symlinker install`.
+
+Required release targets:
+
+```text
+x86_64-unknown-linux-gnu
+aarch64-unknown-linux-gnu
+x86_64-apple-darwin
+aarch64-apple-darwin
+```
+
+The installer only installs the binary. It must not silently edit Claude
+settings, install a service, or migrate files without running the tool's own
+explicit setup command.
 
 ## CLI
 
@@ -1092,11 +1138,20 @@ Implement this as one coherent product pass, not as staged feature releases.
 The end state should be usable with:
 
 ```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh \
+  | sh
 claude-md-symlinker install
 ```
 
 Single-pass checklist:
 
+- Add `cargo-dist` release configuration.
+- Add a GitHub release workflow that builds precompiled Linux and macOS
+  binaries.
+- Generate and publish `claude-md-symlinker-installer.sh` in GitHub Releases.
+- Keep `cargo install --git ...` documented only as a source/development
+  fallback.
 - Add `observed_repositories` and `observed_instruction_dirs` state with
   active/inactive scope.
 - Add `detected_claude_files` state and local `settings` state.
@@ -1152,31 +1207,33 @@ Single-pass checklist:
 
 The install-and-forget implementation is ready when:
 
-1. `claude-md-symlinker install` installs Claude hooks and starts the user
+1. A user can install the binary from GitHub Releases with the documented
+   one-line shell installer without Rust, Cargo, or local compilation.
+2. `claude-md-symlinker install` installs Claude hooks and starts the user
    service without requiring a user config file.
-2. Starting Claude in a Git repo records that repo and every `AGENTS.md`
+3. Starting Claude in a Git repo records that repo and every `AGENTS.md`
    directory on the cwd-to-repo-root path through `observe`.
-3. Observing a cwd path creates ignored sibling `CLAUDE.md` shims for every
+4. Observing a cwd path creates ignored sibling `CLAUDE.md` shims for every
    `AGENTS.md` found between that cwd and the repo root.
-4. Deleting a managed `CLAUDE.md` in a recorded instruction directory is
+5. Deleting a managed `CLAUDE.md` in a recorded instruction directory is
    repaired by the running service.
-5. Repos and instruction directories Claude has never reached are not touched.
-6. Unknown and tracked `CLAUDE.md` files are never changed during normal shim
+6. Repos and instruction directories Claude has never reached are not touched.
+7. Unknown and tracked `CLAUDE.md` files are never changed during normal shim
    repair.
-7. User-owned `CLAUDE.md` files detected on observed paths are recorded as
+8. User-owned `CLAUDE.md` files detected on observed paths are recorded as
    migration candidates.
-8. `migrate` safely converts detected `CLAUDE.md` files into `AGENTS.md`, adds
+9. `migrate` safely converts detected `CLAUDE.md` files into `AGENTS.md`, adds
    `AGENTS.md` to Git when applicable, recreates a local shim, and never
    commits.
-9. `auto_migrate` is chosen at install time, defaults to yes in the prompt, can
+10. `auto_migrate` is chosen at install time, defaults to yes in the prompt, can
    be set to no, and only runs no-warning migrations when enabled.
-10. `status` clearly reports hook, service, state, repo, and migration health.
-11. `repos list/remove/prune` manage the observed repo and instruction directory
+11. `status` clearly reports hook, service, state, repo, and migration health.
+12. `repos list/remove/prune` manage the observed repo and instruction directory
    set.
-12. `purge` removes only shims proven to be managed.
-13. `uninstall` removes managed hooks and service units without touching user
+13. `purge` removes only shims proven to be managed.
+14. `uninstall` removes managed hooks and service units without touching user
     files by default.
-14. The integration test suite covers the hook, service, observed instruction
+15. The integration test suite covers the hook, service, observed instruction
     directory, migration, and purge paths.
 
 ## Non-Goals For This Iteration
