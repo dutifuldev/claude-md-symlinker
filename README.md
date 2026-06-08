@@ -90,12 +90,6 @@ On macOS, use hook-only mode until LaunchAgent support lands:
 claude-md-symlinker install --no-service --auto-migrate
 ```
 
-Source install is still available for development:
-
-```sh
-cargo install --git https://github.com/dutifuldev/claude-md-symlinker
-```
-
 ## How It Works
 
 Claude hooks call:

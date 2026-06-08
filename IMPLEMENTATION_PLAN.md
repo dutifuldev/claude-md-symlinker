@@ -66,12 +66,6 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 claude-md-symlinker install
 ```
 
-Source install remains a developer fallback:
-
-```sh
-cargo install --git https://github.com/dutifuldev/claude-md-symlinker
-```
-
 After install:
 
 ```text
@@ -215,6 +209,9 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 Use `cargo-dist` for release packaging instead of a hand-rolled release
 pipeline.
 
+Primary distribution is GitHub Releases directly. Do not publish this release
+to crates.io; `cargo install` is not part of the supported user install path.
+
 Release behavior:
 
 1. Build precompiled binaries for Linux and macOS.
@@ -236,6 +233,12 @@ aarch64-apple-darwin
 The installer only installs the binary. It must not silently edit Claude
 settings, install a service, or migrate files without running the tool's own
 explicit setup command.
+
+Non-goals for distribution:
+
+- crates.io publishing
+- asking users to install Rust or Cargo
+- requiring local compilation
 
 ## CLI
 
@@ -1150,8 +1153,8 @@ Single-pass checklist:
 - Add a GitHub release workflow that builds precompiled Linux and macOS
   binaries.
 - Generate and publish `claude-md-symlinker-installer.sh` in GitHub Releases.
-- Keep `cargo install --git ...` documented only as a source/development
-  fallback.
+- Do not publish to crates.io.
+- Do not document `cargo install` as a normal user install path.
 - Add `observed_repositories` and `observed_instruction_dirs` state with
   active/inactive scope.
 - Add `detected_claude_files` state and local `settings` state.
