@@ -4,8 +4,9 @@
 expects to find repo-specific context like build commands, coding conventions,
 architecture notes, and workflow rules.
 
-[`AGENTS.md`](https://agents.md/) is the same idea without the brand name. Put
-the repo instructions there once, and any agent that supports it can read them.
+[`AGENTS.md`](https://agents.md/) is "a simple, open format for guiding coding
+agents." It gives agents a predictable place to find the context and
+instructions they need for a repo.
 
 Anthropic's workaround for `AGENTS.md` repos is to add a `CLAUDE.md` that
 imports `@AGENTS.md`, or to create a symlink. That works, but it still leaves
