@@ -17,3 +17,6 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# The generated workflow is intentionally customized to publish the full setup
+# installer while still using cargo-dist for archives, checksums, and releases.
+allow-dirty = ["ci"]

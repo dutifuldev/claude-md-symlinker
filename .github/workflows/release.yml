@@ -197,6 +197,7 @@ jobs:
         run: |
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
+          ./scripts/prepare-release-installer.sh "${{ needs.plan.outputs.tag }}"
 
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
@@ -272,9 +273,25 @@ jobs:
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
           RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
           # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          python3 - <<'PY' > "$RUNNER_TEMP/notes.txt"
+          import os
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          body = os.environ["ANNOUNCEMENT_BODY"]
+          old = (
+              "curl --proto '=https' --tlsv1.2 -LsSf "
+              f"https://github.com/{repo}/releases/download/{tag}/claude-md-symlinker-installer.sh | sh"
+          )
+          new = (
+              "curl -fsSL "
+              f"https://github.com/{repo}/releases/download/{tag}/claude-md-symlinker-installer.sh | sh"
+          )
+          print(body.replace(old, new))
+          PY
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 

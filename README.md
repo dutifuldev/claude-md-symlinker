@@ -44,7 +44,7 @@ Requirements:
 Install:
 
 ```sh
-curl -fsSL https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh | sh && case "$(uname -s)" in Darwin) "${CARGO_HOME:-$HOME/.cargo}/bin/claude-md-symlinker" install --no-service --auto-migrate ;; *) "${CARGO_HOME:-$HOME/.cargo}/bin/claude-md-symlinker" install --auto-migrate ;; esac
+curl -fsSL https://github.com/dutifuldev/claude-md-symlinker/releases/latest/download/claude-md-symlinker-installer.sh | sh
 ```
 
 This does not require Rust, Cargo, or compiling anything locally. It installs
