@@ -6,7 +6,7 @@ architecture notes, and workflow rules.
 
 [`AGENTS.md`](https://agents.md/) is the industry-wide accepted way to provide
 context to agents. It is the same as CLAUDE.md, but your repo is NOT a billboard
-for Anthropic. Imagine having to include clippy.txt in your project...
+for Anthropic. Imagine having to include a clippy.txt in your project...
 
 Anthropic is obstinate like a goat and it is now too late for them to back down
 on this convention. They say, "you can add a `CLAUDE.md` that imports `@AGENTS.md` 😉"
