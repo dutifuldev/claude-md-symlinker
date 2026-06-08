@@ -48,7 +48,7 @@ curl -fsSL https://github.com/dutifuldev/claude-md-symlinker/releases/latest/dow
 ```
 
 This does not require Rust, Cargo, or compiling anything locally. It installs
-the binary and connects it to Claude Code.
+the binary into `~/.local/bin` and connects it to Claude Code.
 
 `install` does four things:
 

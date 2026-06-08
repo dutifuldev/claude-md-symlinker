@@ -132,40 +132,39 @@ verify_checksum() {
 
 append_path_profile() {
     profile="$1"
-    env_file="$2"
+    bin_dir="$2"
     [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return
     [ -e "$profile" ] || : > "$profile" 2>/dev/null || return
-    grep -F "$env_file" "$profile" >/dev/null 2>&1 && return
+    grep -F "$bin_dir" "$profile" >/dev/null 2>&1 && return
     {
         printf '\n# %s\n' "$APP_NAME"
-        printf '. "%s"\n' "$env_file"
+        printf 'case ":$PATH:" in\n'
+        printf '  *:"%s":*) ;;\n' "$bin_dir"
+        printf '  *) export PATH="%s:$PATH" ;;\n' "$bin_dir"
+        printf 'esac\n'
     } >> "$profile" 2>/dev/null || true
 }
 
 ensure_path() {
     bin_dir="$1"
-    prefix="$2"
     [ "${CLAUDE_MD_SYMLINKER_NO_MODIFY_PATH:-0}" = "1" ] && return
 
     case ":${PATH:-}:" in
         *:"$bin_dir":*) return ;;
     esac
 
-    env_file="$prefix/env"
-    if [ ! -e "$env_file" ]; then
-        {
-            printf '#!/bin/sh\n'
-            printf 'case ":${PATH}:" in\n'
-            printf '  *:"%s":*) ;;\n' "$bin_dir"
-            printf '  *) export PATH="%s:$PATH" ;;\n' "$bin_dir"
-            printf 'esac\n'
-        } > "$env_file" 2>/dev/null || true
-    fi
-
     home="$(home_dir)"
-    append_path_profile "$home/.profile" "$env_file"
-    append_path_profile "$home/.bashrc" "$env_file"
-    append_path_profile "$home/.zshrc" "$env_file"
+    append_path_profile "$home/.profile" "$bin_dir"
+    append_path_profile "$home/.bashrc" "$bin_dir"
+    append_path_profile "$home/.zshrc" "$bin_dir"
+}
+
+install_bin_dir() {
+    if [ -n "${CLAUDE_MD_SYMLINKER_INSTALL_DIR:-}" ]; then
+        printf '%s\n' "$CLAUDE_MD_SYMLINKER_INSTALL_DIR"
+        return
+    fi
+    printf '%s/.local/bin\n' "$(home_dir)"
 }
 
 run_setup() {
@@ -217,23 +216,24 @@ main() {
 
     (
         cd "$tmp" || exit 1
+        say "Verifying $archive_name"
         verify_checksum "$archive_name" "$checksum_name"
+        say "Extracting $archive_name"
         tar -xf "$archive_name"
     )
 
-    home="$(home_dir)"
-    prefix="${CLAUDE_MD_SYMLINKER_INSTALL_DIR:-${CARGO_HOME:-$home/.cargo}}"
-    bin_dir="$prefix/bin"
+    bin_dir="$(install_bin_dir)"
     bin="$bin_dir/$APP_NAME"
     extracted="$tmp/$APP_NAME-$target/$APP_NAME"
 
     [ -f "$extracted" ] || die "archive did not contain $APP_NAME"
     mkdir -p "$bin_dir"
     chmod +x "$extracted"
+    say "Installing binary to $bin"
     cp "$extracted" "$bin.tmp.$$"
     mv "$bin.tmp.$$" "$bin"
 
-    ensure_path "$bin_dir" "$prefix"
+    ensure_path "$bin_dir"
     say "Installed $APP_NAME to $bin"
     run_setup "$bin" "$auto_flag"
 }

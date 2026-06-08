@@ -214,6 +214,8 @@ Release behavior:
 3. Publish a shell installer that detects OS and CPU architecture.
 4. Verify downloaded artifacts with release checksums.
 5. Install the binary into a user-local bin directory.
+   The default is `~/.local/bin`; the installer must not depend on Rust,
+   Cargo, or `CARGO_HOME`.
 6. Leave Claude hook and service setup to `claude-md-symlinker install`.
 
 Required release targets:
